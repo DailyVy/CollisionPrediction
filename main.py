@@ -236,167 +236,201 @@ def process_image(img_path, output_folder, predictor, pipe, mask_index, save_all
 # Optical flow
 
 def get_largest_flow_points(flow_map, top_k=1):
-    """
-    optical flow 결과에서 가장 큰 움직임을 가진 포인트들을 추출합니다.
-    
-    Args:
-        flow_map (numpy.ndarray): optical flow 맵. [H, W, 2] 형식.
-        top_k (int): 추출할 가장 큰 움직임을 가진 포인트의 개수.
-    
-    Returns:
-        points (list): 움직임이 가장 큰 top_k 포인트의 좌표.
-    """
-    # Flow 크기 계산
-    flow_magnitude = np.sqrt(flow_map[..., 0]**2 + flow_map[..., 1]**2)
-    
-    # 움직임이 가장 큰 포인트 top_k 추출
+    """Optical flow 결과에서 가장 큰 움직임을 가진 포인트들을 추출합니다."""
+    flow_magnitude = np.sqrt(flow_map[..., 0] ** 2 + flow_map[..., 1] ** 2)
     largest_indices = np.argpartition(flow_magnitude.flatten(), -top_k)[-top_k:]
     largest_points = np.unravel_index(largest_indices, flow_magnitude.shape)
-    
-    points = list(zip(largest_points[1], largest_points[0]))  # (x, y) 좌표로 변환
-    return points
+    return list(zip(largest_points[1], largest_points[0]))  # (x, y) 좌표로 변환
 
-def process_image_with_flow(img_dir, output_folder, predictor, pipe, mask_index, save_all_masks, flow_model, flow_args, point_interval=50):
-    global points, labels, resized_image, resized_image_copy
+def get_largest_flow_points_2(flow_map, top_k=1, min_distance_ratio=0.05):
+    """
+    Optical flow 결과에서 가장 큰 움직임을 가진 포인트들을 추출하며,
+    비슷한 좌표(거리가 가까운 좌표)를 제외합니다. min_distance는 이미지 크기에 대한 비율입니다.
+
+    Args:
+        flow_map (numpy.ndarray): Optical flow 맵. [H, W, 2] 형식.
+        top_k (int): 추출할 가장 큰 움직임을 가진 포인트의 개수.
+        min_distance_ratio (float): 비슷한 좌표를 제외하기 위한 최소 거리 비율 (이미지 크기 대비).
     
-    flow_model.eval()
+    Returns:
+        points (list): 비슷한 좌표를 제외한, 움직임이 가장 큰 top_k 포인트의 좌표.
+    """
+    # Flow 크기 계산
+    flow_magnitude = np.sqrt(flow_map[..., 0] ** 2 + flow_map[..., 1] ** 2)
     
+    # 이미지 크기
+    height, width = flow_map.shape[:2]
+    
+    # 최소 거리를 이미지 크기 비율로 계산 (폭과 높이를 모두 고려)
+    min_distance = min(width, height) * min_distance_ratio
+    
+    # 움직임 크기를 기준으로 내림차순으로 좌표 정렬
+    flat_indices = np.argsort(flow_magnitude.flatten())[::-1]
+    sorted_points = np.unravel_index(flat_indices, flow_magnitude.shape)
+    points = list(zip(sorted_points[1], sorted_points[0]))  # (x, y) 좌표로 변환
+    
+    # 비슷한 좌표(거리가 가까운 좌표) 제외
+    selected_points = []
+    
+    for point in points:
+        if not selected_points:
+            selected_points.append(point)
+        else:
+            # 기존에 선택된 좌표들과 비교하여 min_distance보다 큰 좌표만 추가
+            if all(np.linalg.norm(np.array(point) - np.array(selected_point)) >= min_distance for selected_point in selected_points):
+                selected_points.append(point)
+        
+        # top_k에 도달하면 멈춤
+        if len(selected_points) == top_k:
+            break
+    
+    # 선택된 좌표 반환
+    return selected_points
+
+
+def resize_image(image1, image2, padding_factor, inference_size=None):
+    """이미지를 지정된 padding_factor로 리사이즈하고, inference_size에 맞춰 조정합니다."""
+    nearest_size = [
+        int(np.ceil(image1.size(-2) / padding_factor)) * padding_factor,
+        int(np.ceil(image1.size(-1) / padding_factor)) * padding_factor
+    ]
+
+    inference_size = nearest_size if inference_size is None else inference_size
+    ori_size = image1.shape[-2:]
+
+    if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
+        image1 = F.interpolate(image1, size=inference_size, mode='bilinear', align_corners=True)
+        image2 = F.interpolate(image2, size=inference_size, mode='bilinear', align_corners=True)
+
+    return image1, image2, ori_size
+
+
+def prepare_images(image1_path, image2_path):
+    """이미지 로드 및 전처리: 이미지를 로드하고, RGB로 변환하고, 텐서로 변환합니다."""
+    image1 = cv2.imread(image1_path)
+    image2 = cv2.imread(image2_path)
+
+    if image1 is None or image2 is None:
+        print(f"Error: Failed to load images {image1_path} or {image2_path}")
+        return None, None
+
+    image1 = np.array(image1).astype(np.uint8)
+    image2 = np.array(image2).astype(np.uint8)
+
+    if len(image1.shape) == 2:
+        image1 = np.tile(image1[..., None], (1, 1, 3))
+        image2 = np.tile(image2[..., None], (1, 1, 3))
+
+    image1 = torch.from_numpy(image1).permute(2, 0, 1).float().unsqueeze(0)
+    image2 = torch.from_numpy(image2).permute(2, 0, 1).float().unsqueeze(0)
+
+    return image1, image2
+
+
+def process_image_with_flow(img_dir, output_folder, predictor, pipe, mask_index, save_all_masks, flow_model, flow_args, top_k):
+    """이미지 쌍을 처리하여 optical flow를 계산하고, SAM 모델을 이용한 결과를 저장합니다."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    flow_model.eval()
 
-    # 이미지 시퀀스를 로드 (img_dir에서 이미지 파일들 불러오기)
     image_files = sorted(glob(os.path.join(img_dir, "*.png")) + glob(os.path.join(img_dir, "*.jpg")))
-
-    # 적어도 두 장의 이미지가 필요함
     if len(image_files) < 2:
         print(f"Error: At least two images are required in the directory: {img_dir}")
         return
 
-    # 출력 폴더 생성
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    os.makedirs(output_folder, exist_ok=True)
 
-    # 순차적으로 이미지를 불러와서 optical flow 계산
     for i in range(len(image_files) - 1):
-        image1_path = image_files[i]
-        image2_path = image_files[i + 1]
-
+        image1_path, image2_path = image_files[i], image_files[i + 1]
         print(f"Processing images: {image1_path} and {image2_path}")
 
-        # 이미지 로드
-        image1 = cv2.imread(image1_path)
-        image2 = cv2.imread(image2_path)
+        image1, image2 = prepare_images(image1_path, image2_path)
+        if image1 is None or image2 is None:
+            continue
 
-        # 이미지를 numpy 배열로 변환
-        image1 = np.array(image1).astype(np.uint8)
-        image2 = np.array(image2).astype(np.uint8)
+        image1 = image1.to(device)
+        image2 = image2.to(device)
 
-        # 그레이스케일 이미지를 RGB로 변환
-        if len(image1.shape) == 2:  # gray image
-            image1 = np.tile(image1[..., None], (1, 1, 3))
-            image2 = np.tile(image2[..., None], (1, 1, 3))
-        else:
-            image1 = image1[..., :3]
-            image2 = image2[..., :3]
-
-        # image -> tensor
-        image1 = torch.from_numpy(image1).permute(2, 0, 1).float().unsqueeze(0).to(device)
-        image2 = torch.from_numpy(image2).permute(2, 0, 1).float().unsqueeze(0).to(device)
-
-        # 모델이 훈련된 크기와 맞추기 위해 width > height일 때 이미지 전치
+        # 이미지 전치 (width > height)
         transpose_img = False
         if image1.size(-2) > image1.size(-1):
             image1 = torch.transpose(image1, -2, -1)
             image2 = torch.transpose(image2, -2, -1)
             transpose_img = True
 
-        # padding_factor에 맞게 패딩을 추가하여 크기를 조정
-        padding_factor = flow_args.padding_factor
-        nearest_size = [int(np.ceil(image1.size(-2) / padding_factor)) * padding_factor,
-                        int(np.ceil(image1.size(-1) / padding_factor)) * padding_factor]
+        # 리사이즈
+        image1, image2, ori_size = resize_image(image1, image2, flow_args.padding_factor, flow_args.inference_size)
 
-        # resize to nearest size or specified size
-        fixed_inference_size = flow_args.inference_size
-        inference_size = nearest_size if fixed_inference_size is None else fixed_inference_size
-
-        ori_size = image1.shape[-2:]  # 원본 이미지 크기 저장
-
-        # 지정된 크기에 맞게 리사이즈
-        if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
-            image1 = F.interpolate(image1, size=inference_size, mode='bilinear', align_corners=True)
-            image2 = F.interpolate(image2, size=inference_size, mode='bilinear', align_corners=True)
-
-        # backward flow를 예측하는 경우 이미지 교체
         if flow_args.pred_bwd_flow:
             image1, image2 = image2, image1
 
         # Optical Flow 계산
-        results_dict = flow_model(image1,
-                                  image2,
-                                  attn_type=flow_args.attn_type,
+        results_dict = flow_model(image1, image2, attn_type=flow_args.attn_type,
                                   attn_splits_list=flow_args.attn_splits_list,
                                   corr_radius_list=flow_args.corr_radius_list,
                                   prop_radius_list=flow_args.prop_radius_list,
-                                  num_reg_refine=flow_args.num_reg_refine,
-                                  task='flow')
+                                  num_reg_refine=flow_args.num_reg_refine, task='flow')
 
-        # Optical Flow 결과 추출
-        flow_pr = results_dict['flow_preds'][-1][0].permute(1, 2, 0).detach().cpu().numpy()  # [H, W, 2]
+        flow_pr = results_dict['flow_preds'][-1][0].permute(1, 2, 0).detach().cpu().numpy()
 
-        # Optical Flow 값을 기반으로 가장 큰 움직임을 가진 포인트 추출
-        points = get_largest_flow_points(flow_pr, top_k=10)
+        # 가장 큰 optical flow 포인트 추출
+        # points = get_largest_flow_points(flow_pr, top_k=top_k) # top_k로 조절
+        points = get_largest_flow_points_2(flow_pr, top_k=top_k) # top_k로 조절
         labels = [1] * len(points)
 
-        # SAM 모델을 위한 이미지 설정
+        # SAM 모델에 이미지 설정
         image1_np = image1[0].permute(1, 2, 0).cpu().numpy().astype(np.uint8)
         predictor.set_image(image1_np)
-
-        # SAM Inference 수행
+        
         points_sam = np.array(points)
         labels_sam = np.array(labels)
 
         if points_sam.size == 0:
             print('Error: No input points')
             continue
+        
+        print(f"points_sam: {points_sam}, points_sam.shape: {points_sam.shape}")
+        print(f"labels_sam: {labels_sam}")
+        
+        # SAM Inference
+        masks, scores, logits = predictor.predict(point_coords=points_sam, point_labels=labels_sam, box=None, multimask_output=False)
+        print(f"main.py, masks.shape: {masks.shape}")
+        if len(masks.shape) >= 4 and masks.shape[1] == 1:
+            masks = masks.squeeze(1)
 
-        masks, scores, logits = predictor.predict(
-            point_coords=points_sam,
-            point_labels=labels_sam,
-            box=None,
-            multimask_output=True,
-        )
-
+        print(f"main.py, after squeeze, masks.shape: {masks.shape}")
         # 결과 저장
         save_sam_results(masks, points_sam, labels_sam, image1_np, output_folder, image1_path, mask_index, save_all_masks)
 
     print("Processing completed.")
 
+
 def save_sam_results(masks, points_sam, labels_sam, image, output_folder, image_path, mask_index, save_all_masks):
+    """SAM 결과를 저장하는 함수."""
     base_filename = os.path.basename(image_path)
     base_filename_wo_ext, _ = os.path.splitext(base_filename)
 
     if save_all_masks:
-        for idx in range(3):
-            plt.figure(num=f"Segmentation Result - Mask {idx}", figsize=(8, 5))
-            plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            show_mask(masks[idx], plt.gca())
-            show_points(points_sam, labels_sam, plt.gca())
-            plt.axis('off')
-
-            result_path = os.path.join(output_folder, f"{base_filename_wo_ext}_sam_{idx}.jpg")
-            plt.savefig(result_path, bbox_inches='tight', pad_inches=0)
-            plt.close()
-            print(f"Saved result for {image_path} with mask {idx} to {result_path}")
+        for idx in range(masks.shape[0]):
+            save_single_sam_result(masks, points_sam, labels_sam, image, output_folder, base_filename_wo_ext, idx)
     else:
-        plt.figure(num="Segmentation Result", figsize=(10, 5))
-        plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        show_mask(masks[mask_index], plt.gca())
-        show_points(points_sam, labels_sam, plt.gca())
-        plt.axis('off')
+        save_single_sam_result(masks, points_sam, labels_sam, image, output_folder, base_filename_wo_ext, mask_index)
 
-        result_path = os.path.join(output_folder, f"{base_filename_wo_ext}_sam_{mask_index}.jpg")
-        plt.savefig(result_path, bbox_inches='tight', pad_inches=0)
-        plt.close()
-        print(f"Saved result for {image_path} to {result_path}")
+
+def save_single_sam_result(masks, points_sam, labels_sam, image, output_folder, base_filename_wo_ext, idx):
+    """단일 SAM 마스크 결과 저장."""
+    plt.figure(num=f"Segmentation Result - Mask {idx}", figsize=(8, 5))
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    try:
+        show_mask(masks[idx], plt.gca())
+    except IndexError:
+        show_mask(masks, plt.gca())
+    show_points(points_sam, labels_sam, plt.gca())
+    plt.axis('off')
+
+    result_path = os.path.join(output_folder, f"{base_filename_wo_ext}_sam_{idx}.jpg")
+    plt.savefig(result_path, bbox_inches='tight', pad_inches=0)
+    plt.close()
+    print(f"Saved result to {result_path}")
 
 
 def main(args):
@@ -481,7 +515,8 @@ def main(args):
         mask_index=args.mask_index,
         save_all_masks=args.save_all_masks,
         flow_model=flow_model,
-        flow_args=flow_args
+        flow_args=flow_args,
+        top_k=args.top_k
     )
     print("Processing completed.")
 
@@ -498,6 +533,7 @@ if __name__ == '__main__':
                         choices=[0, 1, 2], help="Index for mask selection (0, 1, 2)")
     parser.add_argument('--save_all_masks', action='store_true',
                         help="Save results for all mask indices (0, 1, 2)")
+    parser.add_argument('--top_k', type=int, default=5, help='top k points of optical flow for masks')
     args = parser.parse_args()
 
     main(args)
