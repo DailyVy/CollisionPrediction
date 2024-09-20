@@ -143,7 +143,7 @@ class SamPredictor:
             coords_torch = torch.as_tensor(point_coords, dtype=torch.float, device=self.device)
             labels_torch = torch.as_tensor(point_labels, dtype=torch.int, device=self.device)
             # coords_torch, labels_torch = coords_torch[None, :, :], labels_torch[None, :]
-            coords_torch, labels_torch = coords_torch[:, None, :], labels_torch[:, None]
+            coords_torch, labels_torch = coords_torch[:, None, :], labels_torch[:, None] # 240919. choivy
         if box is not None:
             box = self.transform.apply_boxes(box, self.original_size)
             box_torch = torch.as_tensor(box, dtype=torch.float, device=self.device)
@@ -162,7 +162,7 @@ class SamPredictor:
         )
 
         # masks_np = masks[0].detach().cpu().numpy()
-        masks_np = masks.detach().cpu().numpy()
+        masks_np = masks.detach().cpu().numpy() # 240919. choivy
         iou_predictions_np = iou_predictions[0].detach().cpu().numpy()
         low_res_masks_np = low_res_masks[0].detach().cpu().numpy()
         return masks_np, iou_predictions_np, low_res_masks_np

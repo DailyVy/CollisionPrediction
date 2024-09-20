@@ -28,10 +28,9 @@ ix, iy = -1, -1  # 시작 좌표
 bbox = None  # bounding box 저장 변수
 points = []
 labels = []
-point_interval = 50
+point_interval = 20
 
 # bounding box 중심 좌표 계산 함수
-
 
 def get_center_of_bbox(x, y, w, h):
     cx = x + w // 2
@@ -40,7 +39,7 @@ def get_center_of_bbox(x, y, w, h):
 
 
 def draw_rectangle(event, x, y, flags, param):
-    global ix, iy, drawing, bbox, resized_image
+    global ix, iy, drawing, bbox, resized_image, resized_image_copy
 
     # 마우스를 눌렀을 때 시작 좌표 저장
     if event == cv2.EVENT_LBUTTONDOWN:
@@ -134,7 +133,7 @@ def process_image(img_path, output_folder, predictor, pipe, mask_index, save_all
 
     # depth image
     pil_image = Image.fromarray(resized_image)
-    depth_array = pipe(pil_image)["depth"]
+    depth_array = pipe(pil_image)["depth"] # depth estimation
     depth_nparray = np.array(depth_array)
     depth = cv2.cvtColor(depth_nparray, cv2.COLOR_RGB2BGR)
 
@@ -179,19 +178,6 @@ def process_image(img_path, output_folder, predictor, pipe, mask_index, save_all
                 box=None,
                 multimask_output=True,
             )
-
-            # 마스크를 적용한 이미지를 생성
-            # mask_overlay = resized_image.copy()
-            # mask = masks[0]
-            # mask = (mask > 0).astype(np.uint8) * 255
-            # # color mask
-            # color_mask = np.zeros_like(resized_image)
-            # color_mask[mask == 255] = (255, 0, 0)  # blue
-
-            # # alpha blending
-            # alpha = 0.5
-            # blended_image = cv2.addWeighted(
-            #     resized_image, 1-alpha, color_mask, alpha, 0)
 
             if save_all_masks:
                 for mask_index in range(3):  # 0, 1, 2에 대해 모두 저장
@@ -433,6 +419,128 @@ def save_single_sam_result(masks, points_sam, labels_sam, image, output_folder, 
     print(f"Saved result to {result_path}")
 
 
+# Points based on the hoist + Optical flow
+# Bounding Box 내에서 Optical Flow가 가장 큰 포인트 추출
+def get_largest_bbox_flow_points(flow_map, bbox_points, top_k=2):
+    flow_magnitude = np.sqrt(flow_map[..., 0] ** 2 + flow_map[..., 1] ** 2)
+
+    # bbox 내 포인트들의 optical flow 값 추출
+    flow_values = [flow_magnitude[pt[1], pt[0]] for pt in bbox_points]
+
+    # 가장 큰 top_k flow 값을 가진 포인트 추출
+    largest_indices = np.argpartition(flow_values, -top_k)[-top_k:]
+    largest_points = [bbox_points[idx] for idx in largest_indices]
+
+    return largest_points
+
+def process_image_with_hoist_and_flow(img_dir, output_folder, predictor, pipe, mask_index, save_all_masks, flow_model, flow_args, top_k):
+    """이미지 쌍을 처리하여 optical flow를 계산하고, SAM 모델을 이용한 결과를 저장합니다."""
+    global points, labels, resized_image, resized_image_copy
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    flow_model.eval()
+
+    image_files = sorted(glob(os.path.join(img_dir, "*.png")) + glob(os.path.join(img_dir, "*.jpg")))
+    if len(image_files) < 2:
+        print(f"Error: At least two images are required in the directory: {img_dir}")
+        return
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    for i in range(len(image_files) - 1):
+        image1_path, image2_path = image_files[i], image_files[i + 1]
+        print(f"\nProcessing images: {image1_path} and {image2_path}")
+
+        image_cv = cv2.imread(image1_path)
+        resized_image = image_cv.copy()
+        resized_image_copy = resized_image.copy()
+        predictor.set_image(resized_image) # SAM predictor에 이미지 설정
+        
+        # bbox 그리기
+        cv2.imshow('Image', resized_image)
+        cv2.setMouseCallback('Image', draw_rectangle)
+        
+        while True:
+            key = cv2.waitKey(1)
+            
+            if key & 0xFF == ord('q'):
+                points = []
+                resized_image = resized_image_copy.copy()
+                cv2.imshow('Image', image_cv)
+                break
+            elif key & 0xFF == ord('r'):
+                reset_bbox()
+            if key & 0xFF == ord('i'):
+                print('Now: Starting SAM Inference with optical flow')
+                break
+
+        # Prepare images for optical flow
+        print('Preparing images for optical flow computation...')
+        image1, image2 = prepare_images(image1_path, image2_path)
+        if image1 is None or image2 is None:
+            continue
+
+        image1 = image1.to(device)
+        image2 = image2.to(device)
+
+        # Resize images for optical flow
+        image1, image2, ori_size = resize_image(image1, image2, flow_args.padding_factor, flow_args.inference_size)
+
+        if flow_args.pred_bwd_flow:
+            image1, image2 = image2, image1
+
+        # Calculate optical flow
+        print('Calculating optical flow...')
+        results_dict = flow_model(image1, image2, attn_type=flow_args.attn_type,
+                                  attn_splits_list=flow_args.attn_splits_list,
+                                  corr_radius_list=flow_args.corr_radius_list,
+                                  prop_radius_list=flow_args.prop_radius_list,
+                                  num_reg_refine=flow_args.num_reg_refine, task='flow')
+
+        flow_pr = results_dict['flow_preds'][-1][0].permute(1, 2, 0).detach().cpu().numpy()
+
+        bbox_points = np.array(points)
+        
+        print(f'Extracting top {top_k} points with the largest optical flow under the bounding box...')
+        largest_bbox_flow_points = get_largest_bbox_flow_points(flow_pr, bbox_points, top_k=top_k)
+        print(f"Largest bbox flow points: {largest_bbox_flow_points}")
+        
+        if len(largest_bbox_flow_points) == 0:
+            print("No valid points found under bbox with highest flow.")
+            continue
+        
+        points = []
+
+        # Set up the SAM model with the first image
+        print('Setting up the SAM model with the first image...')
+        image1_np = image1[0].permute(1, 2, 0).cpu().numpy().astype(np.uint8)
+        predictor.set_image(image1_np)
+        
+        points_sam = np.array(largest_bbox_flow_points)
+        labels_sam = np.array([1] * len(largest_bbox_flow_points))
+
+        if points_sam.size == 0:
+            print('Error: No input points')
+            continue
+        
+        # SAM Inference
+        print('Performing SAM inference...')
+        masks, scores, logits = predictor.predict(
+            point_coords=points_sam, 
+            point_labels=labels_sam, 
+            box=None, 
+            multimask_output=False,
+            )
+        
+        if len(masks.shape) >= 4 and masks.shape[1] == 1:
+            masks = masks.squeeze(1)
+
+        # 결과 저장
+        save_sam_results(masks, points_sam, labels_sam, image1_np, output_folder, image1_path, mask_index, save_all_masks)
+        
+        cv2.destroyWindow('Image')
+        
+
 def main(args):
     # SAM 모델 로드
 
@@ -507,7 +615,19 @@ def main(args):
         num_reg_refine=6           # refinement 스텝 개수
     )
     
-    process_image_with_flow(
+    # process_image_with_flow(
+    #     img_dir=args.input,
+    #     output_folder=args.output,
+    #     predictor=predictor,
+    #     pipe=pipe,
+    #     mask_index=args.mask_index,
+    #     save_all_masks=args.save_all_masks,
+    #     flow_model=flow_model,
+    #     flow_args=flow_args,
+    #     top_k=args.top_k
+    # )
+    
+    process_image_with_hoist_and_flow(
         img_dir=args.input,
         output_folder=args.output,
         predictor=predictor,
@@ -518,7 +638,9 @@ def main(args):
         flow_args=flow_args,
         top_k=args.top_k
     )
+
     print("Processing completed.")
+
 
 
 if __name__ == '__main__':
