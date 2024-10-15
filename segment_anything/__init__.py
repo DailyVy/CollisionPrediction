@@ -13,3 +13,4 @@ from .build_sam import (
 )
 from .predictor import SamPredictor
 from .automatic_mask_generator import SamAutomaticMaskGenerator
+from .automatic_mask_generator_custom import SamAutomaticMaskGeneratorCustom # 241014.choivy

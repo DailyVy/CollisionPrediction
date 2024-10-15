@@ -21,7 +21,8 @@ COLORS = [[0.000, 0.447, 0.741], [0.850, 0.325, 0.098], [0.929, 0.694, 0.125],
           [0.494, 0.184, 0.556], [0.466, 0.674, 0.188], [0.301, 0.745, 0.933]]
 
 # CLASSES
-TEXT = "a forklift. a person."
+# TEXT = "a forklift. a person."
+TEXT = "a chain"
 
 def preprocess_caption(caption: str) -> str:
     result = caption.lower().strip()
@@ -134,11 +135,11 @@ def grounding_dino_to_sam(dino_model, dino_processor, sam_predictor, image, devi
                                               )
     
     # For Visualization
-    # plot_results_gd2sam(image, 
-    #                     results['scores'].tolist(), 
-    #                     results['labels'], 
-    #                     results['boxes'].tolist(), 
-    #                     masks.cpu().numpy())
+    plot_results_gd2sam(image, 
+                        results['scores'].tolist(), 
+                        results['labels'], 
+                        results['boxes'].tolist(), 
+                        masks.cpu().numpy())
     results['masks'] = masks.cpu().numpy()
     
     return results
