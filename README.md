@@ -27,3 +27,11 @@ wget -P pretrained https://s3.eu-central-1.amazonaws.com/avg-projects/unimatch/p
 wget -P pretrained https://s3.eu-central-1.amazonaws.com/avg-projects/unimatch/pretrained/gmstereo-scale2-regrefine3-resumeflowthings-middleburyfthighres-a82bec03.pth
 wget -P pretrained https://s3.eu-central-1.amazonaws.com/avg-projects/unimatch/pretrained/gmdepth-scale1-regrefine1-resumeflowthings-scannet-90325722.pth
 ```
+
+### CAT-Seg + SAM + Hoist
+1. CAT-Seg를 통해 floor를 인식 (CAT-Seg github에서 weight download 필요)
+2. Segment Anything의 prompt를 grid point로 하되, floor에 해당하는 부분만 masking하여 multi mask를 얻어냄
+3. Hoist hook 아래에 있는 mask만 filtering
+```
+python OvsegSAMforHeavy.py --config-file CAT-Seg/configs/vitl_336_demo.yaml --input /path/to/image --opts MODEL.WEIGHTS CAT-Seg/model_large.pth
+```

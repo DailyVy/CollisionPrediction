@@ -158,24 +158,7 @@ def get_parser():
     )
     return parser
 
-
-def test_opencv_video_format(codec, file_ext):
-    with tempfile.TemporaryDirectory(prefix="video_format_test") as dir:
-        filename = os.path.join(dir, "test_file" + file_ext)
-        writer = cv2.VideoWriter(
-            filename=filename,
-            fourcc=cv2.VideoWriter_fourcc(*codec),
-            fps=float(30),
-            frameSize=(10, 10),
-            isColor=True,
-        )
-        [writer.write(np.zeros((10, 10, 3), np.uint8)) for _ in range(30)]
-        writer.release()
-        if os.path.isfile(filename):
-            return True
-        return False
-    
-def show_anns(anns):
+def show_anns(anns, alpha=0.35):
     if len(anns) == 0:
         return
     sorted_anns = sorted(anns, key=(lambda x: x['area']), reverse=True)
@@ -186,7 +169,7 @@ def show_anns(anns):
     img[:,:,3] = 0
     for ann in sorted_anns:
         m = ann['segmentation']
-        color_mask = np.concatenate([np.random.random(3), [0.35]])
+        color_mask = np.concatenate([np.random.random(3), [alpha]])
         img[m] = color_mask
     ax.imshow(img)
 
@@ -222,6 +205,7 @@ if __name__ == "__main__":
             img_path = args.input[0]
             image = cv2.imread(img_path)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            image_copy = image.copy()
         for path in tqdm.tqdm(args.input, disable=not args.output):
             # use PIL, to be consistent with evaluation
             img = read_image(path, format="BGR")
@@ -232,11 +216,108 @@ if __name__ == "__main__":
             mask_generator_custom = SamAutomaticMaskGeneratorCustom(sam, semantic_map=segmap, target_class=target_class)
             masks = mask_generator_custom.generate(image)
             print(masks[0].keys())  
+            
+            # --- Drawing Bbox & y_threshold ---
+            drawing = False  # 마우스 버튼이 눌렸는지 여부
+            start_point = (-1, -1)  # BBox의 시작점
+            end_point = (-1, -1)  # BBox의 끝점
+            # image_copy = img.copy()
+
+            # 마우스 콜백 함수 정의
+            def draw_rectangle(event, x, y, flags, param):
+                global start_point, end_point, drawing, image_copy
+
+                if event == cv2.EVENT_LBUTTONDOWN:
+                    drawing = True
+                    start_point = (x, y)
+                    end_point = (x, y)
+
+                elif event == cv2.EVENT_MOUSEMOVE:
+                    if drawing:
+                        end_point = (x, y)
+                        image_copy = image.copy()
+                        cv2.rectangle(image_copy, start_point, end_point, (0, 255, 0), 2)
+
+                elif event == cv2.EVENT_LBUTTONUP:
+                    drawing = False
+                    end_point = (x, y)
+                    cv2.rectangle(image_copy, start_point, end_point, (0, 255, 0), 2)
+
+            cv2.namedWindow('Draw BBox')
+            cv2.setMouseCallback('Draw BBox', draw_rectangle)
+            
+            print("이미지에 Bounding Box를 그려주세요. 완료되면 's' 키를 눌러주세요.")
+
+            while True:
+                # cv2.imshow('Draw BBox', cv2.cvtColor(image_copy, cv2.COLOR_RGB2BGR))
+                cv2.imshow('Draw BBox', cv2.cvtColor(image_copy, cv2.COLOR_BGR2RGB))
+                key = cv2.waitKey(1) & 0xFF
+
+                if key == ord('s'):  # 's' 키를 누르면 그리기 완료
+                    break
+                elif key == 27:  # 'Esc' 키를 누르면 종료
+                    cv2.destroyAllWindows()
+                    exit()
+            
+            cv2.destroyAllWindows()
+            
+            # BBox 좌표 추출
+            if start_point != (-1, -1) and end_point != (-1, -1):
+                x1, y1 = start_point
+                x2, y2 = end_point
+                x_threshold_min = min(x1, x2)
+                x_threshold_max = max(x1, x2)
+                print(f"Selected BBox: ({x1}, {y1}) to ({x2}, {y2})")
+                print(f"x_threshold_min: {x_threshold_min}, x_threshold_max: {x_threshold_max}")
+            else:
+                print("BBox가 선택되지 않았습니다. 모든 마스크를 유지합니다.")
+                x_threshold_min = 0
+                x_threshold_max = img.shape[1]
+
+            # --- 마스크 필터링 ---
+            def mask_overlaps_bbox_x(mask, x_min, x_max):
+                """
+                마스크의 x축 범위가 BBox의 x축 범위와 겹치는지 확인합니다.
+
+                Args:
+                    mask (np.ndarray): 2D 이진 마스크 배열.
+                    x_min (int): BBox의 최소 x좌표.
+                    x_max (int): BBox의 최대 x좌표.
+
+                Returns:
+                    bool: 마스크가 BBox의 x축 범위와 겹치면 True, 아니면 False.
+                """
+                ys, xs = np.nonzero(mask)
+                if len(xs) == 0:
+                    return False  # 마스크가 비어있는 경우
+
+                mask_x_min = xs.min()
+                mask_x_max = xs.max()
+
+                # 마스크의 x축 범위가 BBox의 x축 범위와 겹치는지 확인
+                return not (mask_x_max < x_min or mask_x_min > x_max)
+
+            filtered_masks = []
+            for mask in masks:
+                if mask_overlaps_bbox_x(mask['segmentation'], x_threshold_min, x_threshold_max):
+                    filtered_masks.append(mask)
+
+            print(f"전체 마스크 수: {len(masks)}, 필터링된 마스크 수: {len(filtered_masks)}")
+
+            # --- BBox 그리기 ---
+            image_with_bboxes = image.copy()
+            cv_image_with_bboxes = cv2.cvtColor(image_with_bboxes, cv2.COLOR_RGB2BGR)
+            cv2.rectangle(cv_image_with_bboxes, start_point, end_point, (0, 255, 0), 2)
+            image_with_bboxes = cv2.cvtColor(cv_image_with_bboxes, cv2.COLOR_BGR2RGB)
+
+            # --- 선택된 마스크 시각화 ---
             plt.figure(figsize=(10,10))
-            plt.imshow(image)
-            show_anns(masks)
+            plt.imshow(image_with_bboxes)
+            show_anns(filtered_masks, alpha=0.5)
             plt.axis('off')
-            plt.show() 
+            plt.title("Filtered Masks Below BBox")
+            plt.show()
+            
             logger.info(
                 "{}: {} in {:.2f}s".format(
                     path,
