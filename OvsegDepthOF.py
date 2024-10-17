@@ -14,15 +14,15 @@ import cv2
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection, pipeline # Grounding DINO, DepthAnythingV2
 from segment_anything import sam_model_registry, SamPredictor, build_sam # SAM
 from unimatch.unimatch import UniMatch # UniMatch
-
+import tqdm
 
 # colors for visualization
 COLORS = [[0.000, 0.447, 0.741], [0.850, 0.325, 0.098], [0.929, 0.694, 0.125],
           [0.494, 0.184, 0.556], [0.466, 0.674, 0.188], [0.301, 0.745, 0.933]]
 
 # CLASSES
-# TEXT = "a forklift. a person."
-TEXT = "a chain"
+TEXT = "a forklift. a person."
+# TEXT = "a chain"
 
 def preprocess_caption(caption: str) -> str:
     result = caption.lower().strip()
@@ -135,11 +135,11 @@ def grounding_dino_to_sam(dino_model, dino_processor, sam_predictor, image, devi
                                               )
     
     # For Visualization
-    plot_results_gd2sam(image, 
-                        results['scores'].tolist(), 
-                        results['labels'], 
-                        results['boxes'].tolist(), 
-                        masks.cpu().numpy())
+    # plot_results_gd2sam(image, 
+    #                     results['scores'].tolist(), 
+    #                     results['labels'], 
+    #                     results['boxes'].tolist(), 
+    #                     masks.cpu().numpy())
     results['masks'] = masks.cpu().numpy()
     
     return results
@@ -166,16 +166,15 @@ def hoist_bbox_sam(first_image, sam_predictor):
     cv2.imshow('Image', image_np_bgr)
     cv2.setMouseCallback('Image', draw_rectangle)
 
-    # 사용자가 'q'를 눌러서 이미지를 종료할 때까지 대기
+    # 사용자가 's'를 눌러서 이미지를 종료할 때까지 대기
     while True:
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord('s'):
             break
 
     cv2.destroyAllWindows()
 
     # bounding box 좌표를 (xmin, ymin, xmax, ymax)로 변환
     if len(bbox) == 2:
-        print(bbox)
         xmin, ymin = bbox[0]
         xmax, ymax = bbox[1]
         box_xyxy = np.array([[xmin, ymin, xmax, ymax]])
@@ -205,52 +204,108 @@ def distance(first_image, objects_info, hoist_mask, depth_model):
     person_masks = []
     for score, label, mask in zip(objects_info['scores'], objects_info['labels'], objects_info['masks']):
         if label == 'a person':
-            person_masks.append(mask)
+            # 마스크를 NumPy 배열로 변환
+            mask_np = np.array(mask)
+            # 마스크의 불필요한 차원을 제거하여 2D 배열로 변환
+            mask_squeezed = np.squeeze(mask_np)
+            # 만약 마스크가 여전히 2차원이 아니면, 마지막 차원을 제거
+            if mask_squeezed.ndim > 2:
+                mask_squeezed = mask_squeezed[..., 0]
+            print(f"Processed person mask shape: {mask_squeezed.shape}")
+            person_masks.append(mask_squeezed)
             
     if len(person_masks) == 0:
-        raise ValueError("No 'a person' masks found in objects_info.") # todos. ValueError 대신 return으로 수정, 추후 main에서 return 값이 None이면 for문 continue
+        # raise ValueError("No 'a person' masks found in objects_info.") # todos. ValueError 대신 return으로 수정, 추후 main에서 return 값이 None이면 for문 continue
+        print("No 'person' masks found in objects_info.")
+        return None  # ValueError 대신 None 반환
     
+    # hoist_mask도 2D 배열로 변환
+    hoist_mask_np = np.array(hoist_mask)
+    hoist_mask_squeezed = np.squeeze(hoist_mask_np)
+    if hoist_mask_squeezed.ndim > 2:
+        hoist_mask_squeezed = hoist_mask_squeezed[..., 0]
+    print(f"hoist_mask's shape: {hoist_mask_squeezed.shape}")
+        
     # depth 계산
     depth_array = depth_model(first_image)["depth"]
-    depth_nparray = np.array(depth_array)
-    depth = cv2.cvtColor(depth_nparray, cv2.COLOR_RGB2BGR)
-    print(f"deptn_nparray's type: {type(depth_nparray)} depth_nparray's shape: {depth_nparray.shape}")
-    print(depth_nparray)
-    cv2.imshow('Depth', depth)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    depth_nparray = np.array(depth_array) # (360, 640)의 ndarray
+    
+    # depth = cv2.cvtColor(depth_nparray, cv2.COLOR_RGB2BGR)
+    # cv2.imshow('Depth', depth)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
     
     # hoist_mask와 각 person_mask의 평균 계산
     def compute_mean_x(mask):
         indices = np.where(mask == 1)  # 마스크 내 유효한 영역 찾기
+        if len(indices[1]) == 0:
+            return None
         return np.mean(indices[1])  # x좌표의 평균 계산 (indices[1]이 x좌표)
     
-    def compute_mean_depth(mask, depth_image):
+    def compute_mean_depth(mask, depth_nparray):
         indices = np.where(mask == 1)
         depths = []
         
-        # 마스크 영역에 해당하는 좌표의 깊이 값을 가져옴
-        for y, x in zip(indices[0], indices[1]):
-            depth = depth_image[y, x]  # 배열에서 깊이 값 가져오기     
-            depths.append(depth)
-        return np.mean(depths) if depths else None  # 평균 깊이 반환
+        if len(indices[0]) == 0 or len(indices[1]) == 0:
+            return None
+        depths = depth_nparray[indices]  # 마스크 영역의 깊이 값 가져오기
+        if depths.size == 0:
+            return None
+        return np.mean(depths)  # 평균 깊이 반환
         
     # 각 마스크의 x좌표 평균 계산
-    hoist_x_mean = compute_mean_x(hoist_mask)
+    hoist_x_mean = compute_mean_x(hoist_mask_squeezed)
     person_x_means = [compute_mean_x(mask) for mask in person_masks]
 
     # 각 마스크의 평균 깊이 계산 (이상치 제거 포함)
-    hoist_depth_mean = compute_mean_depth(hoist_mask, depth_nparray)
+    hoist_depth_mean = compute_mean_depth(hoist_mask_squeezed, depth_nparray)
     person_depth_means = [compute_mean_depth(mask, depth_nparray) for mask in person_masks]
     
-    print(hoist_depth_mean)
+    print(f"Hoist Depth Mean: {hoist_depth_mean}")
+    for idx, depth_val in enumerate(person_depth_means):
+        print(f"Person {idx+1} Depth Mean: {depth_val}")
 
-    return
+    # 거리 계산 (예시: hoist_depth_mean과 각 person_depth_mean 간의 거리)
+    # 여기서는 단순히 hoist_depth_mean과 모든 person_depth_mean의 평균 차이를 계산
+    if hoist_depth_mean is None or any(d is None for d in person_depth_means):
+        print("Depth 계산 중 일부 값이 누락되었습니다.")
+        return None
+    
+    # 개별 거리 값 계산 (delta_x, delta_z)
+    # delta_x : 사람과 hoist간의 x축 거리 (양수: 오른쪽, 음수: 왼쪽)
+    # delta_z : 사람과 hoist간의 z축 거리 (양수: 뒤, 음수: 앞)
+    distance_vals = []
+    for person_x_mean, person_depth_mean in zip(person_x_means, person_depth_means):
+        if person_x_mean is None or person_depth_mean is None:
+            distance_vals.append((None, None))
+        else:
+            delta_x = person_x_mean - hoist_x_mean  # x축 거리 (양수: 오른쪽, 음수: 왼쪽)
+            delta_z = person_depth_mean - hoist_depth_mean  # z축 거리 (양수: 뒤, 음수: 앞)
+            distance_vals.append((delta_x, delta_z))
+            
+    return distance_vals
 
 
 def optical_flow(first_image, second_image, objects_info, hoist_mask, device):
     # Optical Flow 모델 빌드 (main_flow.py에서 가져온 코드)
     pass
+
+def visualize_distance(image, distance_vals, output_path):
+    plt.figure(figsize=(10, 10))
+    plt.imshow(cv2.cvtColor(np.array(image), cv2.COLOR_BGR2RGB))  # 이미지가 BGR 형식일 경우 RGB로 변환
+    
+    if distance_vals is not None:
+        for idx, distance_val in enumerate(distance_vals):
+            plt.text(10, 30 + idx * 20, f"Distance {idx+1}: {distance_val:.2f}", 
+                     color='red', fontsize=12, backgroundcolor='white')
+    else:
+        plt.text(10, 30, "Distance: N/A", color='red', fontsize=12, backgroundcolor='white')
+    
+    plt.axis('off')
+    plt.title("Distance Between Person Masks and Hoist Mask")
+    plt.savefig(output_path)
+    plt.close()
+
     
 def main(args):
     # args 정리
@@ -264,10 +319,6 @@ def main(args):
     
     # image file 정리
     image_files = sorted(glob(os.path.join(img_dir, "*.png")) + glob(os.path.join(img_dir, "*.jpg")))
-    
-    # todos. 일단 두 이미지로만 테스트, 추후 수정
-    image1_path = image_files[0]
-    image2_path = image_files[1]
     
     # ** Loading Grounding DINO model
     print('Loading Grounding DINO')
@@ -304,46 +355,72 @@ def main(args):
     print('Loading DepthAnythingV2 Model')
     depth_model = pipeline(task='depth-estimation',
                            model='depth-anything/Depth-Anything-V2-Small-hf', device=0)
+    for idx, image_path in enumerate(tqdm.tqdm(image_files, desc="Processing Images")):
+        print(f"\nProcessing image {idx+1}/{len(image_files)}: {image_path}")
+        # first_image 
+        first_image = Image.open(image_path) # depth image는 이걸 넣으면 됨
+        
+        # 1. Grounding DINO -> SAM 결과
+        objects_info = grounding_dino_to_sam(dino_model=model, dino_processor=processor, sam_predictor=predictor, image=first_image, device=device)
+        
+        # 2. Hoist -> SAM 결과
+        hoist_mask = hoist_bbox_sam(first_image, predictor)
+        
+        if hoist_mask is not None:
+            print("Successfully generated mask from hoist-drawn bounding box.")
+        else:
+            print("Mask generation failed: Bounding box was not drawn or invalid.")
+            # Distance 값을 None으로 설정하고 시각화
+            distance_value = None
+            output_image_path = os.path.join(args.output, f"distance_{os.path.basename(image_path)}")
+            visualize_distance(first_image, distance_value, output_image_path)
+            print(f"Saved distance visualization with N/A to: {output_image_path}")
+            continue  # 다음 이미지로 넘어감
     
-    # first_image 
-    first_image = Image.open(image1_path) # depth image는 이걸 넣으면 됨
-    
-    # 1. Grounding DINO -> SAM 결과
-    objects_info = grounding_dino_to_sam(dino_model=model, dino_processor=processor, sam_predictor=predictor, image=first_image, device=device)
-    
-    # 2. Hoist -> SAM 결과
-    hoist_mask = hoist_bbox_sam(first_image, predictor)
-    
-    if hoist_mask is not None:
-        print("Successfully generated mask from hoist-drawn bounding box.")
-    else:
-        raise ValueError("Mask generation failed: Bounding box was not drawn or invalid.")
-    
-    # SAM 모델 메모리 해제
-    del predictor  # SAM Predictor 메모리에서 제거
-    del sam  # SAM 모델 메모리에서 제거
-    
-    # Grounding DINO 모델 메모리 해제
-    del model  # DINO 모델 메모리에서 제거
-    del processor  # DINO Processor 메모리에서 제거
-    
-    # GPU 메모리 정리 (GPU에서 SAM 모델이 사용하던 메모리 해제)
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    print("SAM and Grounding DINO models successfully removed from memory.")
+        print("SAM and Grounding DINO models successfully removed from memory.")
+        
+        # 3. Distance 계산 및 시각화
+        distance_vals = distance(first_image, objects_info, hoist_mask, depth_model)  # 개별 거리 값 리스트 반환
 
-    flag_a = distance(first_image, objects_info, hoist_mask, depth_model) # x-axis, y-axis 결과
+        if distance_vals is not None:
+            print(f"Calculated distances: {distance_vals}")
+        else:
+            print("Distance calculation failed.")
 
-    second_image = Image.open(image2_path) # for optical flow
-    flag_b = optical_flow(first_image, second_image, objects_info, hoist_mask, device) # optical flow 결과
-    
-    if flag_a and flag_b:
-        print("DANGEROUS")
-    
-    
+        # Distance 시각화
+        output_image_path = os.path.join(args.output, f"distance_{os.path.basename(image_path)}")
+        visualize_distance(first_image, distance_vals, output_image_path)
+        print(f"Saved distance visualization to: {output_image_path}")
 
+        
+        # 4. Optical Flow (다음 이미지와 비교, 필요시)
+        # 현재 모든 이미지에 대해 독립적으로 처리하고 있으므로, optical flow는 이전 이미지와 현재 이미지를 비교하는 식으로 수정
+        if idx < len(image_files) - 1:
+            second_image_path = image_files[idx + 1]
+            second_image = Image.open(second_image_path)
 
+            flag_b = optical_flow(first_image, second_image, objects_info, hoist_mask, device)
+            print(f"Optical flow result between {image_path} and {second_image_path}: {flag_b}")
+
+            if distance_value and flag_b:
+                print("DANGEROUS")
+        
+        
+        # SAM 모델 메모리 해제
+        del predictor  # SAM Predictor 메모리에서 제거
+        del sam  # SAM 모델 메모리에서 제거
+        
+        # Grounding DINO 모델 메모리 해제
+        del model  # DINO 모델 메모리에서 제거
+        del processor  # DINO Processor 메모리에서 제거
+        
+        # GPU 메모리 정리 (GPU에서 SAM 모델이 사용하던 메모리 해제)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+    print("All images have been processed.")
+    
+    
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Collision Prediction")
