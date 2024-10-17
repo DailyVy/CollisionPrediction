@@ -1,11 +1,13 @@
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), "CAT-Seg"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "unimatch"))
 
 import argparse
 from glob import glob
 
 import torch
+import torch.nn.functional as F
 from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,13 +29,13 @@ from detectron2.utils.logger import setup_logger
 
 from cat_seg import add_cat_seg_config
 
-import torch
-
 from detectron2.data import MetadataCatalog
 from detectron2.engine.defaults import DefaultPredictor
 from detectron2.utils.visualizer import ColorMode, Visualizer
 
 from types import SimpleNamespace as ns
+
+from unimatch.unimatch import UniMatch
 
 # constants
 WINDOW_NAME = "MaskFormer demo"
@@ -316,7 +318,6 @@ if __name__ == "__main__":
             show_anns(filtered_masks, alpha=0.5)
             plt.axis('off')
             plt.title("Filtered Masks Below BBox")
-            plt.show()
             
             logger.info(
                 "{}: {} in {:.2f}s".format(
@@ -336,9 +337,11 @@ if __name__ == "__main__":
                 else:
                     assert len(args.input) == 1, "Please specify a directory with args.output"
                     out_filename = args.output
-                visualized_output.save(out_filename)
+                # visualized_output.save(out_filename)
+                plt.savefig(out_filename, bbox_inches='tight', pad_inches=0)
+                plt.show()
+                plt.close()
             else:
-                cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-                cv2.imshow(WINDOW_NAME, visualized_output.get_image()[:, :, ::-1])
-                if cv2.waitKey(0) == 27:
-                    break  # esc to quit
+                plt.show()
+                plt.close()
+            
