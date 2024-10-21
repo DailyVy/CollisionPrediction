@@ -13,7 +13,7 @@ import logging
 
 from utils.OVSeg import CATSegSegmentationMap, setup_cfg
 from utils.OpticalFlow import load_unimatch_model, compute_optical_flow, calculate_flow_magnitude, resize_flow_magnitude, visualize_flow
-from utils.visualize import visualize_and_save_masks
+from utils.visualize import visualize_and_save, show_anns
 
 from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
 
@@ -32,22 +32,6 @@ def setup_logger():
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
-
-# 시각화 함수
-def show_anns(anns, alpha=0.35):
-    if len(anns) == 0:
-        return
-    sorted_anns = sorted(anns, key=(lambda x: x['area']), reverse=True)
-    ax = plt.gca()
-    ax.set_autoscale_on(False)
-
-    img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
-    img[:,:,3] = 0
-    for ann in sorted_anns:
-        m = ann['segmentation']
-        color_mask = np.concatenate([np.random.random(3), [alpha]])
-        img[m] = color_mask
-    ax.imshow(img)
 
 # Bounding Box 그리기 함수
 def draw_bounding_box(image):
@@ -249,7 +233,7 @@ def main(args):
         post_flow_dir = None
 
     for idx, path in enumerate(tqdm(input_paths, desc="Processing Images")):
-        # try:
+        try:
             # 이미지 로드
             img = cv2.imread(path)
             if img is None:
@@ -336,64 +320,118 @@ def main(args):
                     avg_flow_bbox = 0.0
             else:
                 avg_flow_bbox = None
-                            
-            # 결과 시각화
-            plt.figure(figsize=(10,10))
-            image_with_bboxes = image.copy()
-            if bbox is not None:
-                cv2.rectangle(image_with_bboxes, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
-            plt.imshow(image_with_bboxes)
-            show_anns(final_filtered_masks, alpha=0.5)
             
-            # 텍스트를 추가하기 위해 현재 Axes 객체 가져오기
-            ax = plt.gca()
-
-            # 각 마스크에 평균 Flow Magnitude 표시
-            for idx, mask in enumerate(filtered_masks):
-                mask_mask = mask['segmentation']
-                # 마스크의 중앙 좌표 계산
-                ys, xs = np.nonzero(mask_mask)
-                if len(xs) > 0 and len(ys) > 0:
-                    min_x = xs.min()
-                    min_y = ys.min()
-                    # 마스크의 평균 Flow Magnitude
-                    avg_flow = mask_flow_magnitudes[idx]
-                    # 텍스트 표시
-                    ax.text(min_x + 5, min_y + 5, f"{avg_flow:.2f}", color='white', fontsize=8, weight='bold',
-                            ha='center', va='center', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
-
-            # BBox의 평균 Flow Magnitude 표시
-            if avg_flow_bbox is not None:
-                # BBox의 중앙 좌표 계산
-                bbox_min_x = x_min
-                bbox_min_y = y_min
-                # 텍스트 표시
-                ax.text(bbox_min_x + 5, bbox_min_y + 5, f"BBox Avg Flow: {avg_flow_bbox:.2f}", color='yellow', fontsize=12, weight='bold',
-                        ha='center', va='center', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
-
-            plt.axis('off')
-            plt.title("Filtered Masks Below BBox with Optical Flow Consideration")
-            
-            # Optical Flow 시각화 (옵션)
-            if flow_pr is not None:
-                visualize_flow(flow_pr, save_path=os.path.basename(path))
-
-            # 이미지 저장 또는 표시
+            # --- 시각화 및 저장 ---
             if args.output:
-                os.makedirs(args.output, exist_ok=True)
-                if os.path.isdir(args.output):
-                    # 출력 디렉토리가 존재하는 경우, 동일한 파일 이름으로 저장
-                    out_filename = os.path.join(args.output, os.path.basename(path))
-                else:
-                    # 출력이 디렉토리가 아닌 경우, 단일 파일로 저장 (단일 이미지 처리 시 유용)
-                    out_filename = args.output
-                plt.savefig(out_filename, bbox_inches='tight', pad_inches=0)
-                plt.close()  # 메모리 관리 위해 그림 닫기
-                print(f"Saved visualization to: {out_filename}")
+                # 파일 이름 설정
+                filename = os.path.basename(path)
+                name, ext = os.path.splitext(filename)
+                
+                # Optical Flow 적용 전의 마스크 시각화 및 저장
+                if pre_flow_dir:
+                    pre_flow_save_path = os.path.join(pre_flow_dir, f"{name}_filtered_masks{ext}")
+                    # filtered_masks에 'avg_flow' 추가
+                    for idx, mask in enumerate(filtered_masks):
+                        mask['avg_flow'] = mask_flow_magnitudes[idx]
+                    visualize_and_save(
+                        image=image,
+                        masks=filtered_masks,
+                        mask_flow_magnitudes=mask_flow_magnitudes,
+                        bbox=bbox,
+                        avg_flow_bbox=avg_flow_bbox,
+                        save_path=pre_flow_save_path,
+                        title="Filtered Masks Before Flow Filtering"
+                    )
+                
+                # Optical Flow 적용 후의 마스크 시각화 및 저장
+                if post_flow_dir:
+                    post_flow_save_path = os.path.join(post_flow_dir, f"{name}_final_filtered_masks{ext}")
+                    # final_filtered_masks에 'avg_flow' 추가 (이미 추가됨 in filter_masks_by_avg_flow)
+                    final_flow_magnitudes = [mask['avg_flow'] for mask in final_filtered_masks]
+                    visualize_and_save(
+                        image=image,
+                        masks=final_filtered_masks,
+                        mask_flow_magnitudes=final_flow_magnitudes,
+                        bbox=bbox,
+                        avg_flow_bbox=avg_flow_bbox,
+                        save_path=post_flow_save_path,
+                        title="Final Filtered Masks After Flow Filtering"
+                    )
             else:
+                # 시각화만 표시
+                # Optical Flow 적용 전의 마스크 시각화
+                plt.figure(figsize=(10,10))
+                image_with_bboxes = image.copy()
+                if bbox is not None:
+                    cv2.rectangle(image_with_bboxes, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+                plt.imshow(image_with_bboxes)
+                show_anns(filtered_masks, alpha=0.5)
+                
+                ax = plt.gca()
+
+                # 각 마스크에 평균 Flow Magnitude 표시
+                for idx, mask in enumerate(filtered_masks):
+                    avg_flow = mask_flow_magnitudes[idx]
+                    mask_mask = mask['segmentation']
+                    ys, xs = np.nonzero(mask_mask)
+                    if len(xs) > 0 and len(ys) > 0:
+                        min_x = xs.min()
+                        min_y = ys.min()
+                        # 텍스트 표시
+                        ax.text(min_x + 5, min_y + 5, f"{avg_flow:.2f}", color='white', fontsize=8, weight='bold',
+                                ha='left', va='top', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+
+                # BBox의 평균 Flow Magnitude 표시
+                if avg_flow_bbox is not None:
+                    # BBox의 상단 좌표 계산
+                    bbox_min_x = x_min
+                    bbox_min_y = y_min
+                    # 텍스트 표시
+                    ax.text(bbox_min_x + 5, bbox_min_y + 5, f"BBox Avg Flow: {avg_flow_bbox:.2f}", color='yellow', fontsize=12, weight='bold',
+                            ha='left', va='top', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+
+                plt.axis('off')
+                plt.title("Filtered Masks Before Flow Filtering")
                 plt.show()
                 plt.close()
 
+                # Optical Flow 적용 후의 마스크 시각화
+                if final_filtered_masks:
+                    plt.figure(figsize=(10,10))
+                    image_with_bboxes = image.copy()
+                    if bbox is not None:
+                        cv2.rectangle(image_with_bboxes, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+                    plt.imshow(image_with_bboxes)
+                    show_anns(final_filtered_masks, alpha=0.5)
+                    
+                    ax = plt.gca()
+
+                    # 각 마스크에 평균 Flow Magnitude 표시
+                    for mask in final_filtered_masks:
+                        avg_flow = mask.get('avg_flow', 0.0)
+                        mask_mask = mask['segmentation']
+                        ys, xs = np.nonzero(mask_mask)
+                        if len(xs) > 0 and len(ys) > 0:
+                            min_x = xs.min()
+                            min_y = ys.min()
+                            # 텍스트 표시
+                            ax.text(min_x + 5, min_y + 5, f"{avg_flow:.2f}", color='white', fontsize=8, weight='bold',
+                                    ha='left', va='top', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+
+                    # BBox의 평균 Flow Magnitude 표시
+                    if avg_flow_bbox is not None:
+                        # BBox의 상단 좌표 계산
+                        bbox_min_x = x_min
+                        bbox_min_y = y_min
+                        # 텍스트 표시
+                        ax.text(bbox_min_x + 5, bbox_min_y + 5, f"BBox Avg Flow: {avg_flow_bbox:.2f}", color='yellow', fontsize=12, weight='bold',
+                                ha='left', va='top', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
+
+                    plt.axis('off')
+                    plt.title("Final Filtered Masks After Flow Filtering")
+                    plt.show()
+                    plt.close()
+                
             # --- 로깅 ---
             logger.info(
                 "{}: Processed in {:.2f}s".format(
@@ -403,10 +441,10 @@ def main(args):
             )
             print(f"\nProcessed {path}\n")
 
-        # except Exception as e:
-        #     print(f"Error processing {path}: {e}")
-        #     logger.error(f"Error processing {path}: {e}")
-        #     continue  # 다음 이미지로 넘어감
+        except Exception as e:
+            print(f"Error processing {path}: {e}")
+            logger.error(f"Error processing {path}: {e}")
+            continue  # 다음 이미지로 넘어감
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Optical Flow and Mask Filtering")
