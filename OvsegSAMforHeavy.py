@@ -1,7 +1,6 @@
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), "CAT-Seg"))
-sys.path.append(os.path.join(os.path.dirname(__file__), "unimatch"))
 
 import argparse
 from glob import glob
@@ -34,8 +33,6 @@ from detectron2.engine.defaults import DefaultPredictor
 from detectron2.utils.visualizer import ColorMode, Visualizer
 
 from types import SimpleNamespace as ns
-
-from unimatch.unimatch import UniMatch
 
 # constants
 WINDOW_NAME = "MaskFormer demo"
@@ -176,7 +173,7 @@ def show_anns(anns, alpha=0.35):
     ax.imshow(img)
 
 if __name__ == "__main__":
-    # CAT-Seg
+    # OV-Seg: CAT-Seg
     mp.set_start_method("spawn", force=True)
     args = get_parser().parse_args()
     setup_logger(name="fvcore")
@@ -190,7 +187,7 @@ if __name__ == "__main__":
     text = 'floor, person, forklift, machine, wall, ceilling' 
     target_class = 0 # floor's index: 0
     
-    # SAM load
+    # Segmentation: SAM load
     device = "cuda" if torch.cuda.is_available() else "cpu"
     sam_checkpoint = "sam_vit_h_4b8939.pth" # "sam_vit_l_0b3195.pth", "sam_vit_b_01ec64.pth"
     sam_model_type = "vit_h"
@@ -201,16 +198,27 @@ if __name__ == "__main__":
     sam.to(device=device)
 
     if args.input:
-        if len(args.input) == 1:
-            args.input = glob(os.path.expanduser(args.input[0]))
-            assert args.input, "The input path(s) was not found"
-            img_path = args.input[0]
-            image = cv2.imread(img_path)
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            image_copy = image.copy()
-        for path in tqdm.tqdm(args.input, disable=not args.output):
+        input_paths = []
+        print(args.input)
+        if os.path.isdir(args.input[0]):
+            # 디렉토리인 경우, 디렉토리 내의 모든 이미지 파일을 리스트로 가져옴
+            input_paths = sorted(
+                glob(os.path.join(os.path.expanduser(args.input[0]), "*.png")) + 
+                glob(os.path.join(os.path.expanduser(args.input[0]), "*.jpg")) +
+                glob(os.path.join(os.path.expanduser(args.input[0]), "*.jpeg"))
+            )
+            assert input_paths, f"No image files found in directory: {args.input[0]}"
+        elif os.path.isfile(args.input[0]):
+            input_paths = args.input
+        else:
+            raise ValueError(f"Input path is neither a directory nor a file: {args.input[0]}")
+
+        for path in tqdm.tqdm(input_paths, disable=not args.output):
             # use PIL, to be consistent with evaluation
             img = read_image(path, format="BGR")
+            image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            image_copy = image.copy()
+            
             start_time = time.time()
             predictions, visualized_output, segmap = catseg_map.run_on_image_custom_text(img, text)
             
