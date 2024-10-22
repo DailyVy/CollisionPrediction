@@ -1,7 +1,7 @@
 Test
 
 ## Installation
-```
+```bash
 # recommended to create a new environment with torch1.13 + cuda11.7
 # conda environmental setting
 conda create -n CollPred python=3.8
@@ -32,6 +32,24 @@ wget -P pretrained https://s3.eu-central-1.amazonaws.com/avg-projects/unimatch/p
 1. CAT-Seg를 통해 floor를 인식 (CAT-Seg github에서 weight download 필요)
 2. Segment Anything의 prompt를 grid point로 하되, floor에 해당하는 부분만 masking하여 multi mask를 얻어냄
 3. Hoist hook 아래에 있는 mask만 filtering
-```
+```bash
 python OvsegSAMforHeavy.py --config-file CAT-Seg/configs/vitl_336_demo.yaml --input /path/to/image --opts MODEL.WEIGHTS CAT-Seg/model_large.pth
+```
+
+### CAT-Seg + SAM + Hoist + OF
+1. CAT-Seg를 통해 floor를 인식 (CAT-Seg github에서 weight download 필요)
+2. Segment Anything의 prompt를 grid point로 하되, floor에 해당하는 부분만 masking하여 multi mask를 얻어냄
+3. Hoist hook 아래에 있는 mask만 filtering - candiadate masks
+4. Optical flow를 측정하여 특정 threshold(default=1.0) 이하는 제외
+```bash
+python ovshof.py --config-file CAT-Seg/configs/vitl_336_demo.yaml --input /path/to/image --output /path/to/save/ --threshold_flow 1.0 --opts MODEL.WEIGHTS CAT-Seg/model_large.pth
+```
+
+### CAT-Seg + SAM + Hoist + Depth
+1. CAT-Seg를 통해 floor를 인식 (CAT-Seg github에서 weight download 필요)
+2. Segment Anything의 prompt를 grid point로 하되, floor에 해당하는 부분만 masking하여 multi mask를 얻어냄
+3. Hoist hook 아래에 있는 mask만 filtering - candiadate masks
+4. Depth를 측정하여 hoist와 비슷한 depth를 가진 masks만 filtering (threshold_depth=0.1 -> 10% 이내)
+```bash
+python ovshd.py --config-file CAT-Seg/configs/vitl_336_demo.yaml --input /path/to/image --output /path/to/save/ --threshold_depth 0.1 --opts MODEL.WEIGHTS CAT-Seg/model_large.pth
 ```

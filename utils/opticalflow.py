@@ -166,3 +166,44 @@ def visualize_flow(flow_pr, save_path=None):
     if save_path:
         vis_image.save(os.path.join("./Output_OF", save_path),'JPEG')
     return flow_vis
+
+# Optical Flow 기반 마스크 필터링 함수
+def mask_has_flow(mask, flow_mag, threshold=1.0):
+    """
+    마스크 영역 내의 평균 Optical Flow가 임계값을 초과하는지 확인합니다.
+
+    Args:
+        mask (np.ndarray): 2D 이진 마스크 배열.
+        flow_mag (np.ndarray): Optical Flow Magnitude 배열.
+        threshold (float): Flow magnitude 평균 임계값.
+
+    Returns:
+        bool: 마스크 영역 내의 평균 flow magnitude가 임계값을 초과하면 True, 아니면 False.
+    """
+    # 마스크 영역 내의 Optical Flow Magnitude 추출
+    flow_in_mask = flow_mag[mask > 0]
+    if flow_in_mask.size == 0:
+        return False
+    # 평균 Flow Magnitude 계산
+    avg_flow = np.mean(flow_in_mask)
+    # 평균이 임계값을 초과하는지 확인
+    return avg_flow > threshold
+
+def filter_masks_by_avg_flow(masks, flow_magnitude, threshold=1.0):
+    """
+    마스크의 평균 Optical Flow를 기반으로 마스크를 필터링합니다.
+
+    Args:
+        masks (list): 마스크 리스트.
+        flow_magnitude (np.ndarray): Optical Flow Magnitude 배열.
+        threshold (float): Flow magnitude 평균 임계값.
+
+    Returns:
+        list: 평균 Flow Magnitude가 임계값을 초과하는 마스크 리스트.
+    """
+    final_filtered_masks = []
+    for mask in masks:
+        if mask_has_flow(mask['segmentation'], flow_magnitude, threshold):
+            final_filtered_masks.append(mask)
+    print(f"Optical Flow 평균을 고려한 최종 마스크 수: {len(final_filtered_masks)} (Threshold: {threshold})")
+    return final_filtered_masks

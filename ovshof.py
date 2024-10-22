@@ -11,16 +11,11 @@ import time
 from tqdm import tqdm
 import logging
 
-from utils.OVSeg import CATSegSegmentationMap, setup_cfg
-from utils.OpticalFlow import load_unimatch_model, compute_optical_flow, calculate_flow_magnitude, resize_flow_magnitude, visualize_flow
-from utils.visualize import visualize_and_save, show_anns
+from utils.ovseg import CATSegSegmentationMap, setup_cfg
+from utils.opticalflow import load_unimatch_model, compute_optical_flow, filter_masks_by_avg_flow
+from utils.visualize import flow_visualize_and_save, show_anns
 
 from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
-
-from detectron2.utils.visualizer import ColorMode, Visualizer
-from detectron2.data import MetadataCatalog
-
-from unimatch.utils.flow_viz import flow_to_image
 
 # 설정 로거
 def setup_logger():
@@ -122,48 +117,6 @@ def mask_overlaps_bbox_x(mask, x_min, x_max):
 
     # 마스크의 x축 범위가 BBox의 x축 범위와 겹치는지 확인
     return not (mask_x_max < x_min or mask_x_min > x_max)
-
-# Optical Flow 기반 마스크 필터링 함수
-def mask_has_flow(mask, flow_mag, threshold=1.0):
-    """
-    마스크 영역 내의 평균 Optical Flow가 임계값을 초과하는지 확인합니다.
-
-    Args:
-        mask (np.ndarray): 2D 이진 마스크 배열.
-        flow_mag (np.ndarray): Optical Flow Magnitude 배열.
-        threshold (float): Flow magnitude 평균 임계값.
-
-    Returns:
-        bool: 마스크 영역 내의 평균 flow magnitude가 임계값을 초과하면 True, 아니면 False.
-    """
-    # 마스크 영역 내의 Optical Flow Magnitude 추출
-    flow_in_mask = flow_mag[mask > 0]
-    if flow_in_mask.size == 0:
-        return False
-    # 평균 Flow Magnitude 계산
-    avg_flow = np.mean(flow_in_mask)
-    # 평균이 임계값을 초과하는지 확인
-    return avg_flow > threshold
-
-def filter_masks_by_avg_flow(masks, flow_magnitude, threshold=1.0):
-    """
-    마스크의 평균 Optical Flow를 기반으로 마스크를 필터링합니다.
-
-    Args:
-        masks (list): 마스크 리스트.
-        flow_magnitude (np.ndarray): Optical Flow Magnitude 배열.
-        threshold (float): Flow magnitude 평균 임계값.
-
-    Returns:
-        list: 평균 Flow Magnitude가 임계값을 초과하는 마스크 리스트.
-    """
-    final_filtered_masks = []
-    for mask in masks:
-        if mask_has_flow(mask['segmentation'], flow_magnitude, threshold):
-            final_filtered_masks.append(mask)
-    print(f"Optical Flow 평균을 고려한 최종 마스크 수: {len(final_filtered_masks)} (Threshold: {threshold})")
-    return final_filtered_masks
-
 
 # 메인 함수
 def main(args):
@@ -290,7 +243,7 @@ def main(args):
 
             # Optical Flow 기반 마스크 필터링
             if flow_magnitude_resized is not None:
-                threshold_flow_filter = 1.0
+                threshold_flow_filter = args.threshold_flow
                 final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=threshold_flow_filter)
             else:
                 final_filtered_masks = []
@@ -333,7 +286,7 @@ def main(args):
                     # filtered_masks에 'avg_flow' 추가
                     for idx, mask in enumerate(filtered_masks):
                         mask['avg_flow'] = mask_flow_magnitudes[idx]
-                    visualize_and_save(
+                    flow_visualize_and_save(
                         image=image,
                         masks=filtered_masks,
                         mask_flow_magnitudes=mask_flow_magnitudes,
@@ -348,7 +301,7 @@ def main(args):
                     post_flow_save_path = os.path.join(post_flow_dir, f"{name}_final_filtered_masks{ext}")
                     # final_filtered_masks에 'avg_flow' 추가 (이미 추가됨 in filter_masks_by_avg_flow)
                     final_flow_magnitudes = [mask['avg_flow'] for mask in final_filtered_masks]
-                    visualize_and_save(
+                    flow_visualize_and_save(
                         image=image,
                         masks=final_filtered_masks,
                         mask_flow_magnitudes=final_flow_magnitudes,
@@ -459,10 +412,10 @@ if __name__ == "__main__":
     parser.add_argument("--sam_checkpoint", default="sam_vit_h_4b8939.pth", type=str, help="SAM model checkpoint path")
     parser.add_argument("--flow_checkpoint", default="unimatch/pretrained/gmflow-scale2-regrefine6-mixdata-train320x576-4e7b215d.pth", type=str, help="UniMatch Optical Flow model checkpoint path")
     parser.add_argument(
-        "--confidence-threshold",
+        "--threshold_flow",
         type=float,
-        default=0.5,
-        help="Minimum score for instance predictions to be shown",
+        default=1.0,
+        help="Optical flow threshold value",
     )
     parser.add_argument(
         "--opts",
