@@ -19,6 +19,8 @@ from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
 from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator, colors
 
+from transformers import pipeline # DepthAnythingV2
+
 # 설정 로거
 def setup_logger():
     """기본 로거 설정."""
@@ -83,6 +85,85 @@ def detect_bounding_boxes(yolo_model, image, target_classes=None, conf_threshold
             })
     return bboxes
 
+def get_mask_position(mask):
+    """
+    마스크의 x, y 위치를 중위값으로 계산
+    
+    Args:
+        mask: 마스크 정보를 담고 있는 딕셔너리 (segmentation 키를 포함)
+    
+    Returns:
+        tuple: (x_median, y_median) 마스크의 중위값 좌표
+    """
+    if not isinstance(mask['segmentation'], list):
+        mask_points = np.where(mask['segmentation'])
+        x_coords = mask_points[1] 
+        y_coords = mask_points[0] 
+    else:
+        coords = np.array(mask['segmentation'][0])
+        x_coords = coords[::2]  
+        y_coords = coords[1::2]  
+    
+    # 중위값 계산
+    x_median = np.median(x_coords)
+    y_median = np.median(y_coords)
+
+    return x_median, y_median
+
+def get_bbox_center(bbox):
+    """
+    Bounding box의 중심점 계산
+    
+    Args:
+        bbox: [x_min, y_min, x_max, y_max] 형태의 bbox 좌표
+    
+    Returns:
+        tuple: (center_x, center_y) bbox의 중심점 좌표
+    """
+    x_min, y_min, x_max, y_max = bbox
+    center_x = (x_min + x_max) / 2
+    center_y = (y_min + y_max) / 2
+    return center_x, center_y
+
+def visualize_with_positions(image, final_filtered_masks, person_positions, forklift_positions, title="Objects Positions"):
+    """
+    이미지에 마스크와 각 객체의 위치를 시각화
+    
+    Args:
+        image: 원본 이미지
+        final_filtered_masks: 필터링된 마스크들
+        person_positions: 사람 위치 리스트
+        forklift_positions: 지게차 위치 리스트
+        title: 그래프 제목
+    """
+    plt.figure(figsize=(12, 12))
+    plt.imshow(image)
+    
+    # 마스크 시각화
+    if final_filtered_masks:
+        show_anns(final_filtered_masks, alpha=0.5)
+        
+        # Heavy object (마스크) 중위값 위치 표시
+        for idx, mask in enumerate(final_filtered_masks):
+            x_pos, y_pos = get_mask_position(mask)
+            # 첫 번째 마스크일 때만 레이블 추가
+            plt.plot(x_pos, y_pos, 'r*', markersize=15, label='Heavy Object' if idx == 0 else "")
+    # 사람 위치 표시
+    for person in person_positions:
+        x, y = person['position']
+        plt.plot(x, y, 'go', markersize=10, label='Person' if person == person_positions[0] else "")
+    
+    # 지게차 위치 표시
+    for forklift in forklift_positions:
+        x, y = forklift['position']
+        plt.plot(x, y, 'bs', markersize=10, label='Forklift' if forklift == forklift_positions[0] else "")
+    
+    plt.axis('off')
+    plt.title(title)
+    plt.legend()
+    
+    return plt.gcf()
+
 # 메인 함수
 def main(args):
     # --- 입력 경로 검증 및 처리 ---
@@ -146,14 +227,16 @@ def main(args):
     text = 'floor, person, forklift, machine, wall, ceiling' 
     target_class = 0  # floor's index: 0
     
+    # # --- DepthAnythingV2 인자 설정 ---
+    # print('Loading DepthAnythingV2 Model')
+    # depth_model = pipeline(task='depth-estimation',
+    #                        model='depth-anything/Depth-Anything-V2-Small-hf', device=0)
+    
     # --- 출력 디렉토리 설정 ---
     if args.output:
-        pre_flow_dir = os.path.join(args.output, "pre_flow")
         post_flow_dir = os.path.join(args.output, "post_flow")
-        os.makedirs(pre_flow_dir, exist_ok=True)
         os.makedirs(post_flow_dir, exist_ok=True)
     else:
-        pre_flow_dir = None
         post_flow_dir = None
 
     for idx, path in enumerate(tqdm(input_paths, desc="Processing Images")):
@@ -189,127 +272,189 @@ def main(args):
 
             # YOLO를 사용한 Bounding Box 감지
             # 모든 클래스가 관심 객체이므로 target_classes는 None으로 설정 (모든 클래스)
-            bboxes = detect_bounding_boxes(
+            objects = detect_bounding_boxes(
                 yolo_model, 
                 img, 
                 target_classes=None, 
                 conf_threshold=args.yolo_conf, 
                 iou_threshold=args.yolo_iou
             )
-            print(f"Detected {len(bboxes)} bounding boxes")
+            print(f"Detected {len(objects)} bounding boxes")
             
-            if len(bboxes) == 0: # todos. 오히려 마스크를 모두 삭제해야함
-                print("No bounding boxes detected. 모든 마스크를 유지합니다.")
-                filtered_masks = masks
-            else:
-                # Hoist_hook 클래스에 해당하는 Bounding Box만 사용하여 마스크 필터링
-                filtered_masks = []
-                hoist_bboxes = [bbox_info for bbox_info in bboxes if bbox_info['class'] == 'Hoist']
-                
-                if not hoist_bboxes: # todos. 오히려 마스크를 모두 삭제해야함
-                    print("No Hoist_hook bounding boxes detected. 모든 마스크를 유지합니다.")
-                    filtered_masks = masks
-                else:
-                    for bbox_info in hoist_bboxes:
-                        bbox = bbox_info['bbox']
-                        x_min, y_min, x_max, y_max = bbox
-                        masks_in_bbox = [mask for mask in masks if mask_overlaps_bbox_x(mask['segmentation'], x_min, x_max)]
-                        filtered_masks.extend(masks_in_bbox)
-                    # 중복 제거
-                    filtered_masks = list({id(mask): mask for mask in filtered_masks}.values())
-                    print(f"Total masks after Hoist_hook BBox filtering: {len(filtered_masks)}")
+            class_bboxes = {'Hoist': [],
+                            'Person': [],
+                            'Magnet': [],
+                            'Forklift': []}
+            
+            for object_info in objects:
+                if object_info['class'] in class_bboxes:
+                    class_bboxes[object_info['class']].append(object_info)
+                        
+            hoist_bboxes = class_bboxes['Hoist']
+            
+            if not hoist_bboxes:
+                print("No Hoist bounding boxes detected. 모든 마스크를 삭제하고 다음 이미지로 넘어갑니다.")
+                continue
+
+            # Hoist 클래스에 해당하는 Bounding Box를 사용하여 마스크 필터링
+            filtered_masks = []
+            for bbox_info in hoist_bboxes:
+                bbox = bbox_info['bbox']
+                x_min, y_min, x_max, y_max = bbox
+                masks_in_bbox = [mask for mask in masks if mask_overlaps_bbox_x(mask['segmentation'], x_min, x_max)]
+                filtered_masks.extend(masks_in_bbox)
+
+            # 중복 제거
+            filtered_masks = list({id(mask): mask for mask in filtered_masks}.values())
+            print(f"Total masks after Hoist BBox filtering: {len(filtered_masks)}")
 
             # Optical Flow 계산
             if next_image is not None:
                 image1_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
                 image2_tensor = torch.from_numpy(next_image).permute(2, 0, 1).unsqueeze(0).float()
-                flow_pr, flow_magnitude_resized = compute_optical_flow(
-                    flow_model, 
-                    image1_tensor, 
-                    image2_tensor,
-                    flow_args,
-                    device
-                )
+                flow_pr, flow_magnitude_resized = compute_optical_flow(flow_model, image1_tensor, image2_tensor, flow_args, device)
                 
                 print(f"type(flow_pr): {type(flow_pr)}, shape: {flow_pr.shape}")
                 print(f"flow_magnitude_resized shape: {flow_magnitude_resized.shape}")
             else:
                 print("다음 이미지가 없어 Optical Flow를 계산할 수 없습니다.")
                 flow_magnitude_resized = None
+                break
 
             # Optical Flow 기반 마스크 필터링
+            # filtered_masks는 hoist hook bbox 아래에 있는 mask
+            # final_filtered_masks는 이 masks 중에서 optical flow가 존재하는 masks
             if flow_magnitude_resized is not None:
-                threshold_flow_filter = args.threshold_flow
-                final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=threshold_flow_filter)
+                final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=args.threshold_flow)
             else:
-                final_filtered_masks = []
+                filtered_masks = []
                 print("Optical Flow가 존재하지 않아 모든 마스크를 제거합니다.")
-                
-            # --- 각 마스크의 평균 Flow Magnitude 계산 ---
-            mask_flow_magnitudes = []
-            for mask in final_filtered_masks:
-                # 마스크 영역의 Flow Magnitude 추출
-                flow_in_mask = flow_magnitude_resized[mask['segmentation'] > 0]
-                if flow_in_mask.size > 0:
-                    avg_flow = np.mean(flow_in_mask)
-                else:
-                    avg_flow = 0.0
-                mask_flow_magnitudes.append(avg_flow)
-            print(f"mask_flow_magnitudes : {mask_flow_magnitudes}")
+                continue
             
-            # --- 시각화 및 저장 ---
+            # final_filtered_masks에서 각 heavy object의 위치 계산
+            heavy_objects_positions = []
+            for mask in final_filtered_masks:
+                x_pos, y_pos = get_mask_position(mask)
+                heavy_objects_positions.append({
+                    'mask_id': id(mask),  # 마스크 식별을 위한 ID
+                    'position': (x_pos, y_pos),
+                    'mask': mask  # 원본 마스크 정보 보존
+                })
+                
+            print(f"Detected {len(heavy_objects_positions)} heavy objects:")
+            for obj in heavy_objects_positions:
+                print(f"Heavy object at position: ({obj['position'][0]:.2f}, {obj['position'][1]:.2f})")
+                        
+            # Person과 Forklift의 위치 계산
+            person_positions = []
+            for person in class_bboxes['Person']:
+                center_x, center_y = get_bbox_center(person['bbox'])
+                person_positions.append({
+                    'position': (center_x, center_y),
+                    'bbox': person['bbox']  # 원본 bbox 정보 보존
+                })
+
+            forklift_positions = []
+            for forklift in class_bboxes['Forklift']:
+                center_x, center_y = get_bbox_center(forklift['bbox'])
+                forklift_positions.append({
+                    'position': (center_x, center_y),
+                    'bbox': forklift['bbox']  # 원본 bbox 정보 보존
+                })
+                
+            if person_positions:
+                print(f"\nDetected {len(person_positions)} people:")
+                for idx, person in enumerate(person_positions):
+                    print(f"Person {idx + 1} at position: ({person['position'][0]:.2f}, {person['position'][1]:.2f})")
+
+            if forklift_positions:
+                print(f"\nDetected {len(forklift_positions)} forklifts:")
+                for idx, forklift in enumerate(forklift_positions):
+                    print(f"Forklift {idx + 1} at position: ({forklift['position'][0]:.2f}, {forklift['position'][1]:.2f})")
+                        
+            
+            # 시각화 코드 수정
             if args.output:
                 # 파일 이름 설정
                 filename = os.path.basename(path)
                 name, ext = os.path.splitext(filename)
                 
-                # Optical Flow 적용 전의 마스크 시각화 및 저장
-                if pre_flow_dir:
-                    pre_flow_save_path = os.path.join(pre_flow_dir, f"{name}_filtered_masks{ext}")
-                    # filtered_masks에 'avg_flow' 추가
-                    for idx, mask in enumerate(filtered_masks):
-                        mask['avg_flow'] = mask_flow_magnitudes[idx] if idx < len(mask_flow_magnitudes) else 0.0
-                        mask['class'] = 'Unknown'  # 클래스 정보가 없으므로 필요시 추가
-                    mask_visualize_and_save(
-                        image=image,
-                        masks=filtered_masks,
-                        save_path=pre_flow_save_path,
-                        title="Filtered Masks Before Flow Filtering"
-                    )
-                
-                # Optical Flow 적용 후의 마스크 시각화 및 저장
+                # Optical Flow 적용 후의 마스크와 위치 시각화 및 저장
                 if post_flow_dir:
                     post_flow_save_path = os.path.join(post_flow_dir, f"{name}_final_filtered_masks{ext}")
-                    # final_filtered_masks에 'avg_flow' 추가
-                    final_flow_magnitudes = [mask_flow_magnitudes[idx] for idx in range(len(final_filtered_masks))]
-                    mask_visualize_and_save(
+                    fig = visualize_with_positions(
                         image=image,
-                        masks=final_filtered_masks,
-                        save_path=post_flow_save_path,
-                        title="Final Filtered Masks After Flow Filtering"
+                        final_filtered_masks=final_filtered_masks,
+                        person_positions=person_positions,
+                        forklift_positions=forklift_positions,
+                        title="Final Filtered Masks and Object Positions"
                     )
+                    fig.savefig(post_flow_save_path, bbox_inches='tight', pad_inches=0)
+                    plt.close()
             else:
                 # 시각화만 표시
-                # Optical Flow 적용 전의 마스크 시각화
-                plt.figure(figsize=(10,10))
-                plt.imshow(image)
-                show_anns(filtered_masks, alpha=0.5)
-                
-                plt.axis('off')
-                plt.title("Filtered Masks Before Flow Filtering")
+                # Optical Flow 적용 전의 마스크와 위치 시각화
+                visualize_with_positions(
+                    image=image,
+                    final_filtered_masks=filtered_masks,
+                    person_positions=person_positions,
+                    forklift_positions=forklift_positions,
+                    title="Filtered Masks and Object Positions (Before Flow)"
+                )
                 plt.show()
                 plt.close()
                 
-                # Optical Flow 적용 후의 마스크 시각화
+                # Optical Flow 적용 후의 마스크와 위치 시각화
                 if final_filtered_masks:
-                    plt.figure(figsize=(10,10))
-                    plt.imshow(image)
-                    show_anns(final_filtered_masks, alpha=0.5)
-                    
-                    plt.axis('off')
-                    plt.title("Final Filtered Masks After Flow Filtering")
+                    visualize_with_positions(
+                        image=image,
+                        final_filtered_masks=final_filtered_masks,
+                        person_positions=person_positions,
+                        forklift_positions=forklift_positions,
+                        title="Final Filtered Masks and Object Positions (After Flow)"
+                    )
                     plt.show()
-                    plt.close()       
+                    plt.close()
+                    
+            # --- 시각화 및 저장 ---
+                        
+            # if args.output:
+            #     # 파일 이름 설정
+            #     filename = os.path.basename(path)
+            #     name, ext = os.path.splitext(filename)
+                
+            #     # Optical Flow 적용 후의 마스크 시각화 및 저장
+            #     if post_flow_dir:
+            #         post_flow_save_path = os.path.join(post_flow_dir, f"{name}_final_filtered_masks{ext}")
+            #         # final_filtered_masks에 'avg_flow' 추가
+            #         mask_visualize_and_save(
+            #             image=image,
+            #             masks=final_filtered_masks,
+            #             save_path=post_flow_save_path,
+            #             title="Final Filtered Masks After Flow Filtering"
+            #         )
+            # else:
+            #     # 시각화만 표시
+            #     # Optical Flow 적용 전의 마스크 시각화
+            #     plt.figure(figsize=(10,10))
+            #     plt.imshow(image)
+            #     show_anns(filtered_masks, alpha=0.5)
+                
+            #     plt.axis('off')
+            #     plt.title("Filtered Masks Before Flow Filtering")
+            #     plt.show()
+            #     plt.close()
+                
+            #     # Optical Flow 적용 후의 마스크 시각화
+            #     if final_filtered_masks:
+            #         plt.figure(figsize=(10,10))
+            #         plt.imshow(image)
+            #         show_anns(final_filtered_masks, alpha=0.5)
+                    
+            #         plt.axis('off')
+            #         plt.title("Final Filtered Masks After Flow Filtering")
+            #         plt.show()
+            #         plt.close()       
                 
             # --- 로깅 ---
             logger.info(
