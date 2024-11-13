@@ -64,6 +64,28 @@ def flow_visualize_and_save(image, masks, mask_flow_magnitudes, bbox, avg_flow_b
     plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
     plt.close()
     print(f"Saved visualization to: {save_path}")
+    
+def mask_visualize_and_save(image, masks, save_path, title="Masks Visualization"):
+    """
+    마스크를 시각화하고 이미지를 저장합니다.
+
+    Args:
+        image (np.ndarray): 원본 이미지 (RGB).
+        masks (list): 마스크 리스트. 각 마스크는 'segmentation' 키를 포함해야 함.
+        save_path (str): 저장할 파일 경로.
+        title (str): 플롯의 제목.
+    """
+    plt.figure(figsize=(10,10))
+    plt.imshow(image)
+    
+    # 마스크 시각화
+    show_anns(masks, alpha=0.5)
+
+    plt.axis('off')
+    plt.title(title)
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
+    plt.close()
+    print(f"Saved visualization to: {save_path}")
 
 def depth_visualize_and_save(image, final_masks, masks, mask_depth_magnitudes, bbox, avg_depth_bbox, save_path, title="Depth Filtered Masks"):
     """

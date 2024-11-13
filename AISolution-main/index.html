@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CCTV Monitoring System</title>
+    <style>
+        /* 기본 스타일 */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            margin: 20px;
+            color: #333;
+        }
+
+        #camera-settings-wrapper {
+            display: flex;
+            width: 100%;
+        }
+
+        #camera-container {
+            flex: 3;
+            position: relative;
+            width: 80%;
+            margin: 20px 10px 20px 0;
+            border: 2px solid #ccc;
+            border-radius: 10px;
+            background-color: #fff;
+        }
+
+        #grid-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr); /* 4열 */
+            grid-template-rows: repeat(3, 1fr);    /* 3행 */
+            grid-gap: 10px;
+            width: 100%;
+            height: 80vh; /* 고정된 높이 */
+        }
+
+        .camera-grid {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background-color: #f0f0f0;
+            overflow: hidden;
+        }
+
+        .camera-grid img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* 그리드 크기에 맞춰 이미지 축소 */
+        }
+
+        .camera {
+            position: relative;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0 auto;
+        }
+
+        .camera img {
+            display: block;
+            object-fit: contain;
+        }
+
+        .coords-canvas, .drawing-canvas {
+            position: absolute;
+        }
+
+        .coords-canvas {
+            pointer-events: none;
+        }
+
+        .drawing-canvas {
+            cursor: crosshair;
+            pointer-events: auto;
+        }
+
+        .coords, .objects, .Keymode {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 5px;
+            border-radius: 5px;
+            z-index: 10;
+        }
+
+        .coords {
+            top: 10px;
+            left: 10px;
+        }
+
+        .objects {
+            bottom: 10px;
+            left: 10px;
+        }
+
+        .Keymode {
+            bottom: 10px;
+            right: 10px;
+        }
+
+        #settings-container {
+            flex: 1;
+            display: none;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        #controls {
+            margin: 20px;
+            padding: 5px;
+            background-color: #fff;
+            border: 2px solid #ccc;
+            border-radius: 10px;
+            display: none; /* 기본값은 숨김 */
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+        }
+        #controls.show, #settings-container.show {
+            display: flex; /* 단일 모니터링 모드일 때만 표시 */
+        }
+        #controls select, #controls button {
+            margin: 10px;
+            padding: 10px;
+            font-size: 16px;
+            width: auto;
+        }
+
+        .saveButton {
+            margin: 20px;
+            padding: 20px;
+            font-size: 24px;
+            width: auto;
+        }
+        .condition-group {
+            flex: 1;
+            margin: 0;
+            padding: 10px;
+            background-color: #fff;
+            border: 2px solid #ccc;
+            border-radius: 10px;
+            display: flex;
+            flex-wrap: wrap;
+        }
+
+        .controls-div {
+            font-weight: bold;
+        }
+
+        .condition-item {
+            flex: 1 1 75%;
+            margin: 5px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="camera-settings-wrapper">
+        <div id="camera-container">
+            <h1>CCTV Monitoring System</h1>
+
+            <div id="monitoring-mode">
+                <div>
+                    <label for="monitoring-mode-select">Monitoring Mode:</label>
+                    <select id="monitoring-mode-select" onchange="changeMonitoringMode(this.value)">
+                        <option value="single">Single Monitoring</option>
+                        <option value="group">Group Monitoring</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="camera" id="camera-view" style="display: none;">
+                <img src="" alt="Camera View" id="camera-img">
+                <canvas class="coords-canvas"></canvas>
+                <canvas class="drawing-canvas"></canvas>
+                <div class="coords"></div>
+                <div class="objects"></div>
+                <div class="Keymode"></div>
+            </div>
+
+
+        <div id="grid-container" style="display: none;">
+            <!-- 4x3 그리드를 미리 HTML로 작성 -->
+            <div class="camera-grid" id="camera-grid-0"><img src="" id="camera-img-0"></div>
+            <div class="camera-grid" id="camera-grid-1"><img src="" id="camera-img-1"></div>
+            <div class="camera-grid" id="camera-grid-2"><img src="" id="camera-img-2"></div>
+            <div class="camera-grid" id="camera-grid-3"><img src="" id="camera-img-3"></div>
+            <div class="camera-grid" id="camera-grid-4"><img src="" id="camera-img-4"></div>
+            <div class="camera-grid" id="camera-grid-5"><img src="" id="camera-img-5"></div>
+            <div class="camera-grid" id="camera-grid-6"><img src="" id="camera-img-6"></div>
+            <div class="camera-grid" id="camera-grid-7"><img src="" id="camera-img-7"></div>
+            <div class="camera-grid" id="camera-grid-8"><img src="" id="camera-img-8"></div>
+            <div class="camera-grid" id="camera-grid-9"><img src="" id="camera-img-9"></div>
+            <div class="camera-grid" id="camera-grid-10"><img src="" id="camera-img-10"></div>
+            <div class="camera-grid" id="camera-grid-11"><img src="" id="camera-img-11"></div>
+        </div>
+
+            <div id="controls">
+                <select id="group-select" onchange="selectGroup(this.value)">
+                    <option value="suntech">썬테크</option>
+                    <option value="baramintec">바람인텍</option>
+                    <option value="gimineng">기민ENG</option>
+                    <option value="uriworks">우리웍스</option>
+                </select>
+                <select id="camera-select" onchange="selectCamera(this.value)">
+                    <!-- 카메라 옵션이 동적으로 추가됩니다 -->
+                </select>
+                <select id="view-select" onchange="updateView()">
+                    <option value="original">일반 화면</option>
+                    <option value="result">결과 화면</option>
+                    <option value="depth">Depth 화면</option>
+                </select>
+                <button onclick="prevCamera()">Previous Camera</button>
+                <button onclick="nextCamera()">Next Camera</button>
+                <button onclick="captureImage()">Capture Image</button>
+                <button onclick="resetOptical()">Optical Reset</button>
+            </div>
+        </div>
+
+        <div id="settings-container">
+            <button class="saveButton" onclick="saveSettings()">Save Settings</button>
+            <!-- 기존 설정 UI는 그대로 유지 -->
+            <div class="condition-group">
+                <div class="controls-div">PTZ Control</div>
+                <div class="condition-item">
+                    <button onmousedown="startPTZCommand('pan_left')" onmouseup="stopPTZCommand()" onmouseleave="stopPTZCommand()">Pan Left</button>
+                    <button onmousedown="startPTZCommand('pan_right')" onmouseup="stopPTZCommand()" onmouseleave="stopPTZCommand()">Pan Right</button>
+                    <button onmousedown="startPTZCommand('tilt_up')" onmouseup="stopPTZCommand()" onmouseleave="stopPTZCommand()">Tilt Up</button>
+                    <button onmousedown="startPTZCommand('tilt_down')" onmouseup="stopPTZCommand()" onmouseleave="stopPTZCommand()">Tilt Down</button>
+                    <button onmousedown="startPTZCommand('zoom_in')" onmouseup="stopPTZCommand()" onmouseleave="stopPTZCommand()">Zoom In</button>
+                    <button onmousedown="startPTZCommand('zoom_out')" onmouseup="stopPTZCommand()" onmouseleave="stopPTZCommand()">Zoom Out</button>
+                </div>
+            </div>
+
+            <div class="condition-group">
+                <div class="controls-div">Alert Settings</div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="speaker-toggle" checked> Speaker Alert</label>
+                </div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="lamp-toggle" checked> Lamp Alert</label>
+                </div>
+            </div>
+
+            <div class="condition-group">
+                <div class="controls-div">Basic Detection Settings</div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="human-detection-toggle" checked> 사람 인식</label>
+                </div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="safety-gear-detection-toggle" checked> 안전장구 인식</label>
+                </div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="hoist-operation-detection-toggle"> 호이스트 동작감지</label>
+                </div>
+            </div>
+
+            <div class="condition-group">
+                <div class="controls-div">Collision Detection Settings</div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="forklift-collision-detection-toggle"> 지게차 충돌감지</label>
+                    <select id="forklift-sensitivity" disabled>
+                        <option value="low">낮음</option>
+                        <option value="medium">중간</option>
+                        <option value="high">높음</option>
+                    </select>
+                </div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="heavy-object-collision-detection-toggle"> 중량물 충돌감지</label>
+                    <select id="heavy-object-sensitivity" disabled>
+                        <option value="low">낮음</option>
+                        <option value="medium">중간</option>
+                        <option value="high">높음</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="condition-group">
+                <div class="controls-div">Area-based Detection Settings</div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="entry-exit-detection-toggle"> 입출입감지</label>
+                </div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="equipment-collision-detection-toggle"> 설비와 충돌감지</label>
+                </div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="hoist-departure-detection-toggle"> 호이스트 이탈감지</label>
+                </div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="danger-zone-detection-toggle"> 위험지역 접근감지</label>
+                </div>
+                <div class="condition-item">
+                    <label><input type="checkbox" id="pedestrian-passage-detection-toggle"> 보행통로 적재물감지</label>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let ws;
+        let currentGroup = "suntech";
+        let currentCameraIndex = 0;
+        let currentView = "original";
+        let images = {};
+        let alertState = { speaker: false, lamp: false };
+        let activeSetting = null;
+        let ptzInterval; // ptz 전송 반복
+        const colors = {
+            entryExit: 'red',
+            equipmentCollision: 'blue',
+            hoistDeparture: 'green',
+            dangerZone: 'orange',
+            pedestrianPassage: 'yellow'
+        };
+
+        let detectionSettings = {
+            "suntech": {},
+            "baramintec": {},
+            "gimineng": {},
+            "uriworks": {}
+        };
+
+        const TIMEOUT_DURATION = 1000;
+        let timeoutId;
+        let timeoutId_alert;
+        
+        const cameraUrls = {
+            "suntech": [
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/101",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/201",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/301",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/401",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/501",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/601",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/701",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/801",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/901",
+                "rtsp://admin:0099887766a@uriworks-suntech.iptime.org:5540/Streaming/Channels/1001"
+            ],
+            "baramintec": [
+                "rtsp://admin:0099887766a@uriworks-baramintec.iptime.org:5540/Streaming/Channels/101",
+                "rtsp://admin:0099887766a@uriworks-baramintec.iptime.org:5540/Streaming/Channels/201",
+                "rtsp://admin:0099887766a@uriworks-baramintec.iptime.org:5540/Streaming/Channels/301",
+                "rtsp://admin:0099887766a@uriworks-baramintec.iptime.org:5540/Streaming/Channels/401",
+                "rtsp://admin:0099887766a@uriworks-baramintec.iptime.org:5540/Streaming/Channels/501",
+                "rtsp://admin:0099887766a@uriworks-baramintec.iptime.org:5540/Streaming/Channels/601"
+            ],
+            "gimineng": [
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/101",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/201",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/301",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/401",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/501",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/601",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/701",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/801",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/901",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/1001",
+                "rtsp://admin:0099887766a@uriworks-gimineng.iptime.org:5540/Streaming/Channels/1101"
+            ],
+            "uriworks": [
+                "rtsp://admin:0099887766a@uriworks-office.iptime.org:5101/Streaming/Channels/101",
+                "rtsp://admin:0099887766a@uriworks-office.iptime.org:5102/Streaming/Channels/101",
+                "rtsp://admin:0099887766a@uriworks-office.iptime.org:5103/Streaming/Channels/101"
+            ]
+        };
+
+        function initializeDetectionSettings(group) {
+            detectionSettings[group] = {};
+            cameraUrls[group].forEach((url, index) => {
+                detectionSettings[group][url] = {
+                    cameraUrl : url,
+                    humanDetection: true,
+                    safetyGearDetection: false,
+                    hoistOperationDetection: false,
+                    forkliftCollisionDetection: { enabled: false, sensitivity: "medium" },
+                    heavyObjectCollisionDetection: { enabled: false, sensitivity: "medium" },
+                    entryExitDetection: { enabled: false, area: [] },
+                    equipmentCollisionDetection: { enabled: false, area: [] },
+                    hoistDepartureDetection: { enabled: false, area: [] },
+                    dangerZoneDetection: { enabled: false, area: [] },
+                    pedestrianPassageDetection: { enabled: false, area: [] }
+                };
+            });
+        }
+
+        Object.keys(cameraUrls).forEach(group => initializeDetectionSettings(group));
+
+        const monitoringModeSelect = document.getElementById('monitoring-mode-select');
+        const groupSelect = document.getElementById('group-select');
+        const cameraSelect = document.getElementById('camera-select');
+        const viewSelect = document.getElementById('view-select');
+        const speakerToggle = document.getElementById('speaker-toggle');
+        const lampToggle = document.getElementById('lamp-toggle');
+
+                // 기본 모니터링 모드를 'single'로 설정
+        function initializeMonitoring() {
+            monitoringModeSelect.value = "single";
+
+            const cameraView = document.getElementById('camera-view');
+            const gridContainer = document.getElementById('grid-container');
+            const controls = document.getElementById('controls');
+            const settingsContainer = document.getElementById('settings-container');
+
+            cameraView.style.display = "flex";
+            gridContainer.style.display = "none";
+            controls.classList.add("show");
+            settingsContainer.classList.add("show");
+        }
+
+        function changeMonitoringMode(mode) {
+            const cameraView = document.getElementById('camera-view');
+            const gridContainer = document.getElementById('grid-container');
+            const controls = document.getElementById('controls');
+            const settingsContainer = document.getElementById('settings-container');
+
+            if (mode === "single") {
+                cameraView.style.display = "flex";
+                gridContainer.style.display = "none";
+                controls.classList.add("show");
+                settingsContainer.classList.add("show");
+                //loadCamera(currentCameraIndex);
+            } else if (mode === "group") {
+                cameraView.style.display = "none";
+                gridContainer.style.display = "grid";
+                controls.classList.remove("show");
+                settingsContainer.classList.remove("show");
+                //loadGroupMonitoring();
+            }
+            connectWebSocket();
+        }
+
+        function startGroupMonitoring() {
+            if (ws.readyState === WebSocket.OPEN) {
+                const data = {
+                    urls: cameraUrls[currentGroup],
+                    detectionSettings: detectionSettings[currentGroup]  // 그룹의 모든 설정을 전송
+                };
+                ws.send(JSON.stringify(data));
+            }        
+        }
+
+        document.getElementById('human-detection-toggle').addEventListener('change', function () {
+            getCurrentDetectionSettings().humanDetection = this.checked;
+        });
+
+        document.getElementById('safety-gear-detection-toggle').addEventListener('change', function () {
+            getCurrentDetectionSettings().safetyGearDetection = this.checked;
+        });
+
+        document.getElementById('hoist-operation-detection-toggle').addEventListener('change', function () {
+            getCurrentDetectionSettings().hoistOperationDetection = this.checked;
+        });
+
+        document.getElementById('forklift-collision-detection-toggle').addEventListener('change', function () {
+            const settings = getCurrentDetectionSettings();
+            settings.forkliftCollisionDetection.enabled = this.checked;
+            document.getElementById('forklift-sensitivity').disabled = !this.checked;
+        });
+
+        document.getElementById('forklift-sensitivity').addEventListener('change', function () {
+            getCurrentDetectionSettings().forkliftCollisionDetection.sensitivity = this.value;
+        });
+
+        document.getElementById('heavy-object-collision-detection-toggle').addEventListener('change', function () {
+            const settings = getCurrentDetectionSettings();
+            settings.heavyObjectCollisionDetection.enabled = this.checked;
+            document.getElementById('heavy-object-sensitivity').disabled = !this.checked;
+        });
+
+        document.getElementById('heavy-object-sensitivity').addEventListener('change', function () {
+            getCurrentDetectionSettings().heavyObjectCollisionDetection.sensitivity = this.value;
+        });
+
+        document.getElementById('entry-exit-detection-toggle').addEventListener('change', function () {
+            const settings = getCurrentDetectionSettings();
+            settings.entryExitDetection.enabled = this.checked;
+        });
+
+        document.getElementById('equipment-collision-detection-toggle').addEventListener('change', function () {
+            const settings = getCurrentDetectionSettings();
+            settings.equipmentCollisionDetection.enabled = this.checked;
+        });
+
+        document.getElementById('hoist-departure-detection-toggle').addEventListener('change', function () {
+            const settings = getCurrentDetectionSettings();
+            settings.hoistDepartureDetection.enabled = this.checked;
+        });
+
+        document.getElementById('danger-zone-detection-toggle').addEventListener('change', function () {
+            const settings = getCurrentDetectionSettings();
+            settings.dangerZoneDetection.enabled = this.checked;
+        });
+
+        document.getElementById('pedestrian-passage-detection-toggle').addEventListener('change', function () {
+            const settings = getCurrentDetectionSettings();
+            settings.pedestrianPassageDetection.enabled = this.checked;
+        });
+
+        function getCurrentDetectionSettings() {
+            const currentUrl = cameraUrls[currentGroup][currentCameraIndex];
+            return detectionSettings[currentGroup][currentUrl];
+        }
+
+        function populateCameraOptions() {
+            cameraSelect.innerHTML = "";  // 기존 옵션을 제거
+            cameraUrls[currentGroup].forEach((url, index) => {
+                const option = document.createElement('option');
+                option.value = index;
+                option.text = `Camera ${index + 1}`;
+                cameraSelect.add(option);
+            });
+
+        }
+
+
+        function selectGroup(group) {
+            currentGroup = group;
+            currentCameraIndex = 0;  // 그룹을 변경하면 첫 번째 카메라로 초기화
+            populateCameraOptions();
+            if (monitoringModeSelect.value === "single") {
+                loadCamera(currentCameraIndex);  // 새로운 그룹에 대해 단일 카메라 로드
+            } else {
+                startGroupMonitoring();  // 그룹 모니터링 모드일 경우 전체 로드
+            }
+        }
+
+        function updateView() {
+            currentView = viewSelect.value;  // 현재 뷰를 선택된 값으로 업데이트
+            displayImage();  // 선택된 뷰의 이미지를 화면에 표시
+        }
+
+        function updateSettings() {
+            const settings = getCurrentDetectionSettings();
+
+            document.getElementById('human-detection-toggle').checked = settings.humanDetection;
+            document.getElementById('safety-gear-detection-toggle').checked = settings.safetyGearDetection;
+            document.getElementById('hoist-operation-detection-toggle').checked = settings.hoistOperationDetection;
+
+            document.getElementById('forklift-collision-detection-toggle').checked = settings.forkliftCollisionDetection.enabled;
+            document.getElementById('forklift-sensitivity').value = settings.forkliftCollisionDetection.sensitivity;
+            document.getElementById('forklift-sensitivity').disabled = !settings.forkliftCollisionDetection.enabled;
+
+            document.getElementById('heavy-object-collision-detection-toggle').checked = settings.heavyObjectCollisionDetection.enabled;
+            document.getElementById('heavy-object-sensitivity').value = settings.heavyObjectCollisionDetection.sensitivity;
+            document.getElementById('heavy-object-sensitivity').disabled = !settings.heavyObjectCollisionDetection.enabled;
+
+            document.getElementById('entry-exit-detection-toggle').checked = settings.entryExitDetection.enabled;
+            document.getElementById('equipment-collision-detection-toggle').checked = settings.equipmentCollisionDetection.enabled;
+            document.getElementById('hoist-departure-detection-toggle').checked = settings.hoistDepartureDetection.enabled;
+            document.getElementById('danger-zone-detection-toggle').checked = settings.dangerZoneDetection.enabled;
+            document.getElementById('pedestrian-passage-detection-toggle').checked = settings.pedestrianPassageDetection.enabled;
+        }
+
+        function selectUrlForSettings(url) {
+            const index = cameraUrls[currentGroup].indexOf(url);
+            if (index !== -1) {
+                currentCameraIndex = index;
+                updateSettings();  // 선택된 URL의 설정을 업데이트
+            }
+        }
+
+        function connectWebSocket() {
+            if (ws) {
+                ws.close();
+            }
+
+            ws = new WebSocket("ws://uriworks-office.iptime.org:5555/ws");
+
+            ws.onopen = () => {
+                if (monitoringModeSelect.value === "single") {
+                    loadCamera(currentCameraIndex);
+                } else {
+                    startGroupMonitoring();
+                }
+                updateSettings();  // 그룹 변경 시 설정 값을 업데이트
+                startTimeout();  // 연결 후 타이머 시작
+            };
+
+            ws.onmessage = (event) => {
+                clearTimeout(timeoutId);  // 응답을 받으면 타이머를 초기화
+                const results = JSON.parse(event.data);
+
+                if (monitoringModeSelect.value === "single") {
+                    images.original = `data:image/jpeg;base64,${results.original_image}`;
+                    images.result = `data:image/jpeg;base64,${results.result_image}`;
+                    images.depth = `data:image/jpeg;base64,${results.depth_image}`;
+
+                    displayImage();  // 선택된 뷰의 이미지를 표시
+
+                    const coordsDiv = document.querySelector(".coords");
+                    const objectsDiv = document.querySelector(".objects");
+                    coordsDiv.textContent = `Objects: ${results.object_count}`;
+                    objectsDiv.textContent = `Relevant objects: ${results.relevant_objects.join(", ")}`;
+
+                    handleAlert(results.alert);
+                } else if (monitoringModeSelect.value === "group") {
+                    console.log(results)
+                    const img = document.getElementById(`camera-img-${results.camera_index}`);
+                        if (img) {
+                            img.src = `data:image/jpeg;base64,${results.original_image}`;
+                            handleAlert(results.alert);
+                        }
+
+                }
+
+                startTimeout();  // 응답을 받았으니 다시 타이머 시작
+            };
+
+            ws.onclose = () => {
+                console.log("WebSocket connection closed");
+            };
+
+            ws.onerror = (error) => {
+                console.error("WebSocket error:", error);
+            };
+        }
+
+        function startTimeout_alert() {
+            clearTimeout(timeoutId_alert);  // 기존 타이머가 있다면 초기화
+            timeoutId_alert = setTimeout(() => {
+                console.log("No response received in time, closing WebSocket connection.");
+            }, TIMEOUT_DURATION);
+        }
+
+        function startTimeout() {
+            clearTimeout(timeoutId);  // 기존 타이머가 있다면 초기화
+            timeoutId = setTimeout(() => {
+                console.log("No response received in time, closing WebSocket connection.");
+                ws.close();  // 일정 시간 동안 응답이 없으면 연결 종료
+            }, TIMEOUT_DURATION * 10);
+        }
+
+        function displayImage() {
+            const img = document.querySelector("#camera-img");
+            img.src = images[currentView] || "";  // 현재 선택된 뷰의 이미지로 업데이트
+            img.onload = () => adjustCameraView(img);
+        }
+
+        function loadCamera(index) {
+            if (ws.readyState === WebSocket.OPEN) {
+                const currentUrl = cameraUrls[currentGroup][index];
+                const data = {
+                    urls: [currentUrl],
+                    detectionSettings: detectionSettings[currentGroup]  // 그룹의 모든 설정을 전송
+                };
+                ws.send(JSON.stringify(data));
+            }
+            updateSettings();
+            drawCoords();
+        }
+
+        function saveSettings() {
+            if (ws.readyState === WebSocket.OPEN) {
+                const data = {
+                    detectionSettings: detectionSettings[currentGroup]  // 그룹의 모든 설정을 전송
+                };
+                ws.send(JSON.stringify(data));
+            }
+        }
+
+        function adjustCameraView(img) {
+            const cameraView = document.getElementById('camera-img');
+            const cameraPosition = cameraView.getBoundingClientRect();
+            const aspectRatio = img.naturalWidth / img.naturalHeight;
+
+            const canvasElems = document.querySelectorAll('.coords-canvas, .drawing-canvas');
+            canvasElems.forEach(canvas => {
+                canvas.style.width = img.clientWidth + 'px';
+                canvas.style.height = img.clientHeight + 'px';
+                canvas.width = img.clientWidth;
+                canvas.height = img.clientHeight;
+                canvas.top = cameraPosition.top
+                canvas.left = cameraPosition.left
+            });
+
+            drawCoords();
+        }
+
+        function handleAlert(alert) {
+            if (speakerToggle.checked) {
+                if (alert && !alertState.speaker) {
+                    fetch('http://192.168.0.151/speaker?value=2')
+                        .then(response => response.text())
+                        .then(data => console.log('Speaker turned on:', data))
+                        .catch(error => console.error('Error turning on speaker:', error));
+                    alertState.speaker = true;
+                } else if (!alert && alertState.speaker) {
+                    fetch('http://192.168.0.151/speaker?value=0')
+                        .then(response => response.text())
+                        .then(data => console.log('Speaker turned off:', data))
+                        .catch(error => console.error('Error turning off speaker:', error));
+                    alertState.speaker = false;
+                }
+            }
+
+            if (lampToggle.checked) {
+                if (alert && !alertState.lamp) {
+                    fetch('http://192.168.0.151/noti?value=2')
+                        .then(response => response.text())
+                        .then(data => console.log('Lamp turned on:', data))
+                        .catch(error => console.error('Error turning on lamp:', error));
+                    alertState.lamp = true;
+                } else if (!alert && alertState.lamp) {
+                    fetch('http://192.168.0.151/noti?value=0')
+                        .then(response => response.text())
+                        .then(data => console.log('Lamp turned off:', data))
+                        .catch(error => console.error('Error turning off lamp:', error));
+                    alertState.lamp = false;
+                }
+            }
+        }
+
+        function setArea(type, x, y) {
+            const currentSettings = getCurrentDetectionSettings();
+            if (!currentSettings[type].enabled) return;
+
+            const img = document.querySelector("#camera-img");
+            const relativeX = x / img.clientWidth;
+            const relativeY = y / img.clientHeight;
+
+            let coords = currentSettings[type].area;
+            let index = coords.findIndex(coord => coord[0] === -1 && coord[1] === -1);
+            if (index !== -1) {
+                coords[index] = [relativeX, relativeY];
+            } else {
+                coords = [[relativeX, relativeY], [-1, -1], [-1, -1], [-1, -1]];
+            }
+            currentSettings[type].area = coords;
+            console.log(coords);
+
+            drawCoords();
+        }
+
+        function drawCoords() {
+            const ctx = document.querySelector(".coords-canvas").getContext("2d");
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            const currentSettings = getCurrentDetectionSettings();
+
+            ['entryExitDetection', 'equipmentCollisionDetection', 'hoistDepartureDetection', 'dangerZoneDetection', 'pedestrianPassageDetection'].forEach(type => {
+                const coords = currentSettings[type].area;
+                const color = colors[type.replace('Detection', '')];
+
+                if (coords.length > 0) {
+                    ctx.strokeStyle = color;
+                    ctx.fillStyle = color;
+                    ctx.lineWidth = 2;
+
+                    coords.forEach(coord => {
+                        if (coord[0] !== -1 && coord[1] !== -1) {
+                            const x = coord[0] * ctx.canvas.width;
+                            const y = coord[1] * ctx.canvas.height;
+                            ctx.beginPath();
+                            ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                            ctx.fill();
+                        }
+                    });
+                    if (coords.filter(coord => coord[0] !== -1 && coord[1] !== -1).length >= 2) {
+                        ctx.beginPath();
+                        const validCoords = coords.filter(coord => coord[0] !== -1 && coord[1] !== -1);
+                        ctx.moveTo(validCoords[0][0] * ctx.canvas.width, validCoords[0][1] * ctx.canvas.height);
+                        for (let i = 1; i < validCoords.length; i++) {
+                            ctx.lineTo(validCoords[i][0] * ctx.canvas.width, validCoords[i][1] * ctx.canvas.height);
+                        }
+                        ctx.closePath();
+                        ctx.stroke();
+                    }
+                }
+            });
+        }
+
+        function resetOptical() {
+            fetch('http://uriworks-office.iptime.org:5555/optical')
+                        .then(response => response.text())
+                        .catch(error => console.error('Error Reset optical:', error));
+        }
+
+        function captureImage() {
+            const img = document.querySelector("#camera-img");
+
+            const timestamp = new Date().toISOString().replace(/[-:.]/g, '');
+            const filename = `capture_${timestamp}.jpg`;
+
+            fetch(img.src)
+                .then(res => res.blob())
+                .then(blob => {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                })
+                .catch(error => console.error('Error capturing image:', error));
+        }
+
+        function nextCamera() {
+            currentCameraIndex = (currentCameraIndex + 1) % cameraUrls[currentGroup].length;
+            loadCamera(currentCameraIndex);
+            cameraSelect.value = currentCameraIndex;
+        }
+
+        function prevCamera() {
+            currentCameraIndex = (currentCameraIndex - 1 + cameraUrls[currentGroup].length) % cameraUrls[currentGroup].length;
+            loadCamera(currentCameraIndex);
+            cameraSelect.value = currentCameraIndex;
+        }
+
+        function selectCamera(index) {
+            currentCameraIndex = parseInt(index);
+            updateSettings();  // 카메라 변경 시 설정 값을 업데이트
+            loadCamera(currentCameraIndex);
+        }
+
+        function startPTZCommand(command) {
+        sendPTZCommand(command);  // Immediately send the first command
+        ptzInterval = setInterval(() => sendPTZCommand(command), 100);  // Send repeatedly every 100ms
+        }
+
+        function stopPTZCommand() {
+            clearInterval(ptzInterval);  // Stop sending the command
+        }
+        
+        function sendPTZCommand(command) {
+            const tmpUrl = cameraUrls[currentGroup][currentCameraIndex];
+
+            const UrlStart = tmpUrl.indexOf("@") + 1;
+            const UrlFinish = tmpUrl.indexOf(":5540");
+
+            const currentUrl = tmpUrl.substring(UrlStart,UrlFinish) + ":8283";
+
+            const ptzControl = {
+                url: currentUrl,
+                channel : currentCameraIndex + 1,
+                id: 'admin', 
+                password: '0099887766a', 
+                command: command
+            };
+
+            fetch('http://uriworks-office.iptime.org:5555/ptz', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(ptzControl)
+            })
+            .then(response => response.json())
+            .catch(error => console.error('Error:', error));
+        }
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "1") activeSetting = "entryExitDetection";
+            if (e.key === "2") activeSetting = "equipmentCollisionDetection";
+            if (e.key === "3") activeSetting = "hoistDepartureDetection";
+            if (e.key === "4") activeSetting = "dangerZoneDetection";
+            if (e.key === "5") activeSetting = "pedestrianPassageDetection";
+
+            const objectsDiv = document.querySelector(".Keymode");
+            objectsDiv.textContent = `activate: ${activeSetting}`;
+        });
+
+        document.addEventListener("keyup", (e) => {
+            if (["1", "2", "3", "4", "5"].includes(e.key)) activeSetting = null;
+
+            const objectsDiv = document.querySelector(".Keymode");
+            objectsDiv.textContent = `activate: ${activeSetting}`;
+        });
+
+        document.querySelector(".drawing-canvas").addEventListener("mousedown", (e) => {
+            if (!activeSetting) return;
+
+            const canvas = e.target;
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+
+            setArea(activeSetting, x, y);
+        });
+
+
+        populateCameraOptions();
+        updateSettings();  // 초기 설정 값을 불러옴
+        initializeMonitoring();  // 초기 모니터링 모드 설정
+        connectWebSocket();  // 초기 웹소켓 연결
+
+    </script>
+</body>
+</html>

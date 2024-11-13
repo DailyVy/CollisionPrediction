@@ -13,9 +13,11 @@ import logging
 
 from utils.ovseg import CATSegSegmentationMap, setup_cfg
 from utils.opticalflow import load_unimatch_model, compute_optical_flow, filter_masks_by_avg_flow
-from utils.visualize import flow_visualize_and_save, show_anns
+from utils.visualize import mask_visualize_and_save, show_anns
 
 from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
+from ultralytics import YOLO
+from ultralytics.utils.plotting import Annotator, colors
 
 # 설정 로거
 def setup_logger():
@@ -27,73 +29,6 @@ def setup_logger():
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
-
-# Bounding Box 그리기 함수
-def draw_bounding_box(image):
-    """
-    사용자로부터 Bounding Box를 그리게 하는 함수.
-
-    Args:
-        image (np.ndarray): RGB 이미지.
-
-    Returns:
-        bbox (tuple): Bounding Box 좌표 (x_min, y_min, x_max, y_max).
-    """
-    drawing = False  # 마우스 버튼이 눌렸는지 여부
-    start_point = (-1, -1)  # BBox의 시작점
-    end_point = (-1, -1)  # BBox의 끝점
-    image_copy = image.copy()
-
-    def draw_rectangle(event, x, y, flags, param):
-        nonlocal start_point, end_point, drawing, image_copy
-
-        if event == cv2.EVENT_LBUTTONDOWN:
-            drawing = True
-            start_point = (x, y)
-            end_point = (x, y)
-
-        elif event == cv2.EVENT_MOUSEMOVE:
-            if drawing:
-                end_point = (x, y)
-                image_copy = image.copy()
-                cv2.rectangle(image_copy, start_point, end_point, (0, 255, 0), 2)
-
-        elif event == cv2.EVENT_LBUTTONUP:
-            drawing = False
-            end_point = (x, y)
-            cv2.rectangle(image_copy, start_point, end_point, (0, 255, 0), 2)
-
-    cv2.namedWindow('Draw BBox')
-    cv2.setMouseCallback('Draw BBox', draw_rectangle)
-    
-    print("이미지에 Bounding Box를 그려주세요. 완료되면 's' 키를 눌러주세요.")
-
-    while True:
-        # OpenCV 창에 이미지 표시
-        cv2.imshow('Draw BBox', cv2.cvtColor(image_copy, cv2.COLOR_RGB2BGR))
-        key = cv2.waitKey(1) & 0xFF
-
-        if key == ord('s'):  # 's' 키를 누르면 그리기 완료
-            break
-        elif key == 27:  # 'Esc' 키를 누르면 종료
-            cv2.destroyAllWindows()
-            exit()
-    
-    cv2.destroyAllWindows()
-    
-    # BBox 좌표 추출
-    if start_point != (-1, -1) and end_point != (-1, -1):
-        x1, y1 = start_point
-        x2, y2 = end_point
-        x_min = min(x1, x2)
-        x_max = max(x1, x2)
-        y_min = min(y1, y2)
-        y_max = max(y1, y2)
-        print(f"Selected BBox: ({x_min}, {y_min}) to ({x_max}, {y_max})")
-        return (x_min, y_min, x_max, y_max)
-    else:
-        print("BBox가 선택되지 않았습니다. 모든 마스크를 유지합니다.")
-        return None
 
 # 마스크 필터링 함수
 def mask_overlaps_bbox_x(mask, x_min, x_max):
@@ -117,6 +52,36 @@ def mask_overlaps_bbox_x(mask, x_min, x_max):
 
     # 마스크의 x축 범위가 BBox의 x축 범위와 겹치는지 확인
     return not (mask_x_max < x_min or mask_x_min > x_max)
+
+# YOLO를 사용한 객체 감지 함수
+def detect_bounding_boxes(yolo_model, image, target_classes=None, conf_threshold=0.2, iou_threshold=0.5):
+    """
+    YOLO 모델을 사용하여 이미지에서 객체를 감지하고 Bounding Box를 반환합니다.
+
+    Args:
+        yolo_model (YOLO): 로드된 YOLO 모델.
+        image (np.ndarray): BGR 이미지.
+        target_classes (List[int], optional): 감지할 클래스의 인덱스 리스트. 기본값은 None (모든 클래스).
+        conf_threshold (float): 신뢰도 임계값.
+        iou_threshold (float): IoU 임계값.
+
+    Returns:
+        List[dict]: Bounding Box와 클래스 정보를 포함한 리스트. 예: [{'bbox': (x_min, y_min, x_max, y_max), 'class': 'Hoist_hook'}, ...]
+    """
+    results = yolo_model(image, conf=conf_threshold, iou=iou_threshold, device=yolo_model.device)[0]
+    bboxes = []
+    for detection in results.boxes:
+        x1, y1, x2, y2 = map(int, detection.xyxy[0])
+        cls_idx = int(detection.cls)
+        conf = float(detection.conf)
+        label = results.names[cls_idx]
+        if target_classes is None or cls_idx in target_classes:
+            bboxes.append({
+                'bbox': (x1, y1, x2, y2),
+                'class': label,
+                'confidence': conf
+            })
+    return bboxes
 
 # 메인 함수
 def main(args):
@@ -147,16 +112,22 @@ def main(args):
     logger = setup_logger()
     logger.info("Arguments: " + str(args))
 
+    # --- YOLO 모델 로드 ---
+    yolo_model = YOLO(args.yolo_model)
+    yolo_model.to(args.device)
+    print(f'Loaded YOLOv8 Model from {args.yolo_model} on {args.device}')
+
     # --- SAM 및 UniMatch 모델 로드 ---
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = args.device
     
     sam = sam_model_registry["vit_h"](checkpoint=args.sam_checkpoint)
     sam.to(device=device)
     sam.eval()
     print(f'Loaded Segment Anything Model: vit_h')
-
+    
     flow_model = load_unimatch_model(args.flow_checkpoint, device=device)
-        # --- Optical Flow 인자 설정 ---
+    
+    # --- Optical Flow 인자 설정 ---
     flow_args = argparse.Namespace(
         padding_factor=32,         # 패딩 팩터 설정
         inference_size=None,       # 추론 크기
@@ -186,7 +157,7 @@ def main(args):
         post_flow_dir = None
 
     for idx, path in enumerate(tqdm(input_paths, desc="Processing Images")):
-        try:
+        # try:
             # 이미지 로드
             img = cv2.imread(path)
             if img is None:
@@ -216,24 +187,49 @@ def main(args):
                 print("No masks generated. Skipping this image.")
                 continue
 
-            bbox = draw_bounding_box(image)
-
-            # Bounding Box를 기준으로 마스크 필터링
-            if bbox is not None:
-                x_min, y_min, x_max, y_max = bbox
-                filtered_masks = [mask for mask in masks if mask_overlaps_bbox_x(mask['segmentation'], x_min, x_max)]
-            else:
+            # YOLO를 사용한 Bounding Box 감지
+            # 모든 클래스가 관심 객체이므로 target_classes는 None으로 설정 (모든 클래스)
+            bboxes = detect_bounding_boxes(
+                yolo_model, 
+                img, 
+                target_classes=None, 
+                conf_threshold=args.yolo_conf, 
+                iou_threshold=args.yolo_iou
+            )
+            print(f"Detected {len(bboxes)} bounding boxes")
+            
+            if len(bboxes) == 0: # todos. 오히려 마스크를 모두 삭제해야함
+                print("No bounding boxes detected. 모든 마스크를 유지합니다.")
                 filtered_masks = masks
-            print(f"Total masks: {len(masks)}, Masks after BBox filtering: {len(filtered_masks)}")
+            else:
+                # Hoist_hook 클래스에 해당하는 Bounding Box만 사용하여 마스크 필터링
+                filtered_masks = []
+                hoist_bboxes = [bbox_info for bbox_info in bboxes if bbox_info['class'] == 'Hoist']
+                
+                if not hoist_bboxes: # todos. 오히려 마스크를 모두 삭제해야함
+                    print("No Hoist_hook bounding boxes detected. 모든 마스크를 유지합니다.")
+                    filtered_masks = masks
+                else:
+                    for bbox_info in hoist_bboxes:
+                        bbox = bbox_info['bbox']
+                        x_min, y_min, x_max, y_max = bbox
+                        masks_in_bbox = [mask for mask in masks if mask_overlaps_bbox_x(mask['segmentation'], x_min, x_max)]
+                        filtered_masks.extend(masks_in_bbox)
+                    # 중복 제거
+                    filtered_masks = list({id(mask): mask for mask in filtered_masks}.values())
+                    print(f"Total masks after Hoist_hook BBox filtering: {len(filtered_masks)}")
 
             # Optical Flow 계산
             if next_image is not None:
                 image1_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
                 image2_tensor = torch.from_numpy(next_image).permute(2, 0, 1).unsqueeze(0).float()
-                flow_pr, flow_magnitude_resized = compute_optical_flow(flow_model, 
-                                                                       image1_tensor, image2_tensor,
-                                                                       flow_args,
-                                                                       device)
+                flow_pr, flow_magnitude_resized = compute_optical_flow(
+                    flow_model, 
+                    image1_tensor, 
+                    image2_tensor,
+                    flow_args,
+                    device
+                )
                 
                 print(f"type(flow_pr): {type(flow_pr)}, shape: {flow_pr.shape}")
                 print(f"flow_magnitude_resized shape: {flow_magnitude_resized.shape}")
@@ -251,8 +247,7 @@ def main(args):
                 
             # --- 각 마스크의 평균 Flow Magnitude 계산 ---
             mask_flow_magnitudes = []
-            # for mask in final_filtered_masks:
-            for mask in filtered_masks:
+            for mask in final_filtered_masks:
                 # 마스크 영역의 Flow Magnitude 추출
                 flow_in_mask = flow_magnitude_resized[mask['segmentation'] > 0]
                 if flow_in_mask.size > 0:
@@ -261,18 +256,6 @@ def main(args):
                     avg_flow = 0.0
                 mask_flow_magnitudes.append(avg_flow)
             print(f"mask_flow_magnitudes : {mask_flow_magnitudes}")
-            
-            # --- Bounding Box 영역의 평균 Flow Magnitude 계산 ---
-            if bbox is not None:
-                x_min, y_min, x_max, y_max = bbox
-                # BBox 영역의 Flow Magnitude 추출
-                flow_in_bbox = flow_magnitude_resized[y_min:y_max, x_min:x_max]
-                if flow_in_bbox.size > 0:
-                    avg_flow_bbox = np.mean(flow_in_bbox)
-                else:
-                    avg_flow_bbox = 0.0
-            else:
-                avg_flow_bbox = None
             
             # --- 시각화 및 저장 ---
             if args.output:
@@ -285,13 +268,11 @@ def main(args):
                     pre_flow_save_path = os.path.join(pre_flow_dir, f"{name}_filtered_masks{ext}")
                     # filtered_masks에 'avg_flow' 추가
                     for idx, mask in enumerate(filtered_masks):
-                        mask['avg_flow'] = mask_flow_magnitudes[idx]
-                    flow_visualize_and_save(
+                        mask['avg_flow'] = mask_flow_magnitudes[idx] if idx < len(mask_flow_magnitudes) else 0.0
+                        mask['class'] = 'Unknown'  # 클래스 정보가 없으므로 필요시 추가
+                    mask_visualize_and_save(
                         image=image,
                         masks=filtered_masks,
-                        mask_flow_magnitudes=mask_flow_magnitudes,
-                        bbox=bbox,
-                        avg_flow_bbox=avg_flow_bbox,
                         save_path=pre_flow_save_path,
                         title="Filtered Masks Before Flow Filtering"
                     )
@@ -299,14 +280,11 @@ def main(args):
                 # Optical Flow 적용 후의 마스크 시각화 및 저장
                 if post_flow_dir:
                     post_flow_save_path = os.path.join(post_flow_dir, f"{name}_final_filtered_masks{ext}")
-                    # final_filtered_masks에 'avg_flow' 추가 (이미 추가됨 in filter_masks_by_avg_flow)
-                    final_flow_magnitudes = [mask['avg_flow'] for mask in final_filtered_masks]
-                    flow_visualize_and_save(
+                    # final_filtered_masks에 'avg_flow' 추가
+                    final_flow_magnitudes = [mask_flow_magnitudes[idx] for idx in range(len(final_filtered_masks))]
+                    mask_visualize_and_save(
                         image=image,
                         masks=final_filtered_masks,
-                        mask_flow_magnitudes=final_flow_magnitudes,
-                        bbox=bbox,
-                        avg_flow_bbox=avg_flow_bbox,
                         save_path=post_flow_save_path,
                         title="Final Filtered Masks After Flow Filtering"
                     )
@@ -314,76 +292,24 @@ def main(args):
                 # 시각화만 표시
                 # Optical Flow 적용 전의 마스크 시각화
                 plt.figure(figsize=(10,10))
-                image_with_bboxes = image.copy()
-                if bbox is not None:
-                    cv2.rectangle(image_with_bboxes, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
-                plt.imshow(image_with_bboxes)
+                plt.imshow(image)
                 show_anns(filtered_masks, alpha=0.5)
                 
-                ax = plt.gca()
-
-                # 각 마스크에 평균 Flow Magnitude 표시
-                for idx, mask in enumerate(filtered_masks):
-                    avg_flow = mask_flow_magnitudes[idx]
-                    mask_mask = mask['segmentation']
-                    ys, xs = np.nonzero(mask_mask)
-                    if len(xs) > 0 and len(ys) > 0:
-                        min_x = xs.min()
-                        min_y = ys.min()
-                        # 텍스트 표시
-                        ax.text(min_x + 5, min_y + 5, f"{avg_flow:.2f}", color='white', fontsize=8, weight='bold',
-                                ha='left', va='top', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
-
-                # BBox의 평균 Flow Magnitude 표시
-                if avg_flow_bbox is not None:
-                    # BBox의 상단 좌표 계산
-                    bbox_min_x = x_min
-                    bbox_min_y = y_min
-                    # 텍스트 표시
-                    ax.text(bbox_min_x + 5, bbox_min_y + 5, f"BBox Avg Flow: {avg_flow_bbox:.2f}", color='yellow', fontsize=12, weight='bold',
-                            ha='left', va='top', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
-
                 plt.axis('off')
                 plt.title("Filtered Masks Before Flow Filtering")
                 plt.show()
                 plt.close()
-
+                
                 # Optical Flow 적용 후의 마스크 시각화
                 if final_filtered_masks:
                     plt.figure(figsize=(10,10))
-                    image_with_bboxes = image.copy()
-                    if bbox is not None:
-                        cv2.rectangle(image_with_bboxes, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
-                    plt.imshow(image_with_bboxes)
+                    plt.imshow(image)
                     show_anns(final_filtered_masks, alpha=0.5)
                     
-                    ax = plt.gca()
-
-                    # 각 마스크에 평균 Flow Magnitude 표시
-                    for mask in final_filtered_masks:
-                        avg_flow = mask.get('avg_flow', 0.0)
-                        mask_mask = mask['segmentation']
-                        ys, xs = np.nonzero(mask_mask)
-                        if len(xs) > 0 and len(ys) > 0:
-                            min_x = xs.min()
-                            min_y = ys.min()
-                            # 텍스트 표시
-                            ax.text(min_x + 5, min_y + 5, f"{avg_flow:.2f}", color='white', fontsize=8, weight='bold',
-                                    ha='left', va='top', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
-
-                    # BBox의 평균 Flow Magnitude 표시
-                    if avg_flow_bbox is not None:
-                        # BBox의 상단 좌표 계산
-                        bbox_min_x = x_min
-                        bbox_min_y = y_min
-                        # 텍스트 표시
-                        ax.text(bbox_min_x + 5, bbox_min_y + 5, f"BBox Avg Flow: {avg_flow_bbox:.2f}", color='yellow', fontsize=12, weight='bold',
-                                ha='left', va='top', bbox=dict(facecolor='black', alpha=0.5, boxstyle='round,pad=0.2'))
-
                     plt.axis('off')
                     plt.title("Final Filtered Masks After Flow Filtering")
                     plt.show()
-                    plt.close()
+                    plt.close()       
                 
             # --- 로깅 ---
             logger.info(
@@ -394,13 +320,13 @@ def main(args):
             )
             print(f"\nProcessed {path}\n")
 
-        except Exception as e:
-            print(f"Error processing {path}: {e}")
-            logger.error(f"Error processing {path}: {e}")
-            continue  # 다음 이미지로 넘어감
+        # except Exception as e:
+        #     print(f"Error processing {path}: {e}")
+        #     logger.error(f"Error processing {path}: {e}")
+        #     continue  # 다음 이미지로 넘어감
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Optical Flow and Mask Filtering")
+    parser = argparse.ArgumentParser(description="Optical Flow and Mask Filtering with YOLOv8 Integration")
     parser.add_argument(
         "--config-file",
         default="CAT-Seg/configs/vitl_336_demo.yaml",
@@ -411,12 +337,14 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default=None, help="Output directory or file path")
     parser.add_argument("--sam_checkpoint", default="sam_vit_h_4b8939.pth", type=str, help="SAM model checkpoint path")
     parser.add_argument("--flow_checkpoint", default="unimatch/pretrained/gmflow-scale2-regrefine6-mixdata-train320x576-4e7b215d.pth", type=str, help="UniMatch Optical Flow model checkpoint path")
-    parser.add_argument(
-        "--threshold_flow",
-        type=float,
-        default=1.0,
-        help="Optical flow threshold value",
-    )
+    parser.add_argument("--threshold_flow", type=float, default=2.0, help="Optical flow threshold value")
+    
+    # YOLO 관련 인자 추가
+    parser.add_argument("--yolo_model", type=str, default="AISolution-main/yolov8x_baram.pt", help="Path to the YOLOv8 model file")
+    parser.add_argument("--yolo_conf", type=float, default=0.2, help="YOLO 신뢰도 임계값")
+    parser.add_argument("--yolo_iou", type=float, default=0.5, help="YOLO IoU 임계값")
+    parser.add_argument("--device", type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
+        help="Device to run the models on ('cuda' or 'cpu')",)
     parser.add_argument(
         "--opts",
         help="Modify config options using the command-line 'KEY VALUE' pairs",
