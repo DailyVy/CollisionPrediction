@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import cv2
 import numpy as np
+from typing import List, Dict, Any
 
 def show_anns(anns, alpha=0.35):
     if len(anns) == 0:
@@ -136,3 +137,96 @@ def depth_visualize_and_save(image, final_masks, masks, mask_depth_magnitudes, b
     plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
     plt.close()
     print(f"Saved visualization to: {save_path}")
+
+def visualize_with_positions(image, heavy_objects_positions, person_positions, forklift_positions, title="Objects Positions"):
+    """
+    이미지에 마스크와 각 객체의 위치를 시각화
+    
+    Args:
+        image: 원본 이미지
+        final_filtered_masks: 필터링된 마스크들
+        person_positions: 사람 위치 리스트
+        forklift_positions: 지게차 위치 리스트
+        title: 그래프 제목
+    """
+    plt.figure(figsize=(12, 12))
+    plt.imshow(image)
+    
+    # 마스크 시각화
+    if heavy_objects_positions:
+        show_anns(heavy_objects_positions, alpha=0.5)
+        
+        # Heavy object (마스크) 중위값 위치 표시
+        for idx, heavy_object in enumerate(heavy_objects_positions):
+            x_pos, y_pos = heavy_object['position']
+            # 첫 번째 마스크일 때만 레이블 추가
+            plt.plot(x_pos, y_pos, 'r*', markersize=15, label='Heavy Object' if idx == 0 else "")
+    # 사람 위치 표시
+    for person in person_positions:
+        x, y = person['position']
+        plt.plot(x, y, 'go', markersize=10, label='Person' if person == person_positions[0] else "")
+    
+    # 지게차 위치 표시
+    for forklift in forklift_positions:
+        x, y = forklift['position']
+        plt.plot(x, y, 'bs', markersize=10, label='Forklift' if forklift == forklift_positions[0] else "")
+    
+    plt.axis('off')
+    plt.title(title)
+    plt.legend()
+    
+    return plt.gcf()
+
+
+def visualize_with_3d_positions(
+    image: np.ndarray,
+    final_filtered_masks: List[Dict[str, Any]], 
+    person_positions_3d: List[Dict[str, Any]], 
+    forklift_positions_3d: List[Dict[str, Any]], 
+    heavy_objects_positions_3d: List[Dict[str, Any]], 
+    title: str = "Objects 3D Positions"
+) -> plt.Figure:
+    """
+    이미지에 마스크와 각 객체의 3D 위치를 시각화
+
+    Args:
+        image: 원본 이미지
+        final_filtered_masks: 필터링된 마스크들
+        person_positions_3d: 사람 3D 위치 리스트
+        forklift_positions_3d: 지게차 3D 위치 리스트
+        heavy_objects_positions_3d: heavy object 3D 위치 리스트
+        title: 그래프 제목
+
+    Returns:
+        plt.Figure: 생성된 matplotlib Figure 객체
+    """
+    plt.figure(figsize=(12, 12))
+    plt.imshow(image)
+    
+    # 마스크 시각화
+    if final_filtered_masks:
+        show_anns(final_filtered_masks, alpha=0.5)
+    
+    # Heavy object 위치 표시
+    for idx, obj in enumerate(heavy_objects_positions_3d):
+        x, y, z = obj['position_3d']
+        label = f'Heavy Object (x: {x:.2f}px, y: {y:.2f}px, z: {z:.2f})'
+        plt.plot(x, y, 'r*', markersize=15, label=label if idx == 0 else "")
+    
+    # 사람 위치 표시
+    for idx, person in enumerate(person_positions_3d):
+        x, y, z = person['position_3d']
+        label = f'Person (x: {x:.2f}px, y: {y:.2f}px, z: {z:.2f})'
+        plt.plot(x, y, 'go', markersize=10, label=label if idx == 0 else "")
+    
+    # 지게차 위치 표시
+    for idx, forklift in enumerate(forklift_positions_3d):
+        x, y, z = forklift['position_3d']
+        label = f'Forklift (x: {x:.2f}px, y: {y:.2f}px, z: {z:.2f})'
+        plt.plot(x, y, 'bs', markersize=10, label=label if idx == 0 else "")
+    
+    plt.axis('off')
+    plt.title(title)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    return plt.gcf()
