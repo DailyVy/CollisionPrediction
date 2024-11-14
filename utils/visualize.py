@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import cv2
 import numpy as np
 from typing import List, Dict, Any
-
+from utils.mask_utils import get_mask_position
 def show_anns(anns, alpha=0.35):
     if len(anns) == 0:
         return
@@ -138,7 +138,7 @@ def depth_visualize_and_save(image, final_masks, masks, mask_depth_magnitudes, b
     plt.close()
     print(f"Saved visualization to: {save_path}")
 
-def visualize_with_positions(image, heavy_objects_positions, person_positions, forklift_positions, title="Objects Positions"):
+def visualize_with_positions(image, final_filtered_masks, person_positions, forklift_positions, title="Objects Positions"):
     """
     이미지에 마스크와 각 객체의 위치를 시각화
     
@@ -153,12 +153,12 @@ def visualize_with_positions(image, heavy_objects_positions, person_positions, f
     plt.imshow(image)
     
     # 마스크 시각화
-    if heavy_objects_positions:
-        show_anns(heavy_objects_positions, alpha=0.5)
+    if final_filtered_masks:
+        show_anns(final_filtered_masks, alpha=0.5)
         
         # Heavy object (마스크) 중위값 위치 표시
-        for idx, heavy_object in enumerate(heavy_objects_positions):
-            x_pos, y_pos = heavy_object['position']
+        for idx, mask in enumerate(final_filtered_masks):
+            x_pos, y_pos = get_mask_position(mask)
             # 첫 번째 마스크일 때만 레이블 추가
             plt.plot(x_pos, y_pos, 'r*', markersize=15, label='Heavy Object' if idx == 0 else "")
     # 사람 위치 표시

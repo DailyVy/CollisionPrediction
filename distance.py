@@ -1,5 +1,4 @@
 import os
-import sys
 import argparse
 from glob import glob
 import torch
@@ -15,12 +14,15 @@ from utils.ovseg import CATSegSegmentationMap, setup_cfg
 from utils.opticalflow import load_unimatch_model, compute_optical_flow, filter_masks_by_avg_flow
 from utils.depth import get_depth_at_position, get_3d_positions
 from utils.visualize import mask_visualize_and_save, show_anns, visualize_with_3d_positions, visualize_with_positions
+from utils.mask_utils import mask_overlaps_bbox_x, get_mask_position, merge_overlapping_masks
+from utils.detection_utils import detect_bounding_boxes, get_bbox_center
 
 from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
 from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator, colors
 
 from transformers import pipeline # DepthAnythingV2
+
 
 # 설정 로거
 def setup_logger():
@@ -32,98 +34,6 @@ def setup_logger():
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
-
-# 마스크 필터링 함수
-def mask_overlaps_bbox_x(mask, x_min, x_max):
-    """
-    마스크의 x축 범위가 BBox의 x축 범위와 겹치는지 확인합니다.
-
-    Args:
-        mask (np.ndarray): 2D 이진 마스크 배열.
-        x_min (int): BBox의 최소 x좌표.
-        x_max (int): BBox의 최대 x좌표.
-
-    Returns:
-        bool: 마스크가 BBox의 x축 범위와 겹치면 True, 아니면 False.
-    """
-    ys, xs = np.nonzero(mask)
-    if len(xs) == 0:
-        return False  # 마스크가 비어있는 경우
-
-    mask_x_min = xs.min()
-    mask_x_max = xs.max()
-
-    # 마스크의 x축 범위가 BBox의 x축 범위와 겹치는지 확인
-    return not (mask_x_max < x_min or mask_x_min > x_max)
-
-# YOLO를 사용한 객체 감지 함수
-def detect_bounding_boxes(yolo_model, image, target_classes=None, conf_threshold=0.2, iou_threshold=0.5):
-    """
-    YOLO 모델을 사용하여 이미지에서 객체를 감지하고 Bounding Box를 반환합니다.
-
-    Args:
-        yolo_model (YOLO): 로드된 YOLO 모델.
-        image (np.ndarray): BGR 이미지.
-        target_classes (List[int], optional): 감지할 클래스의 인덱스 리스트. 기본값은 None (모든 클래스).
-        conf_threshold (float): 신뢰도 임계값.
-        iou_threshold (float): IoU 임계값.
-
-    Returns:
-        List[dict]: Bounding Box와 클래스 정보를 포함한 리스트. 예: [{'bbox': (x_min, y_min, x_max, y_max), 'class': 'Hoist_hook'}, ...]
-    """
-    results = yolo_model(image, conf=conf_threshold, iou=iou_threshold, device=yolo_model.device)[0]
-    bboxes = []
-    for detection in results.boxes:
-        x1, y1, x2, y2 = map(int, detection.xyxy[0])
-        cls_idx = int(detection.cls)
-        conf = float(detection.conf)
-        label = results.names[cls_idx]
-        if target_classes is None or cls_idx in target_classes:
-            bboxes.append({
-                'bbox': (x1, y1, x2, y2),
-                'class': label,
-                'confidence': conf
-            })
-    return bboxes
-
-def get_mask_position(mask):
-    """
-    마스크의 x, y 위치를 중위값으로 계산
-    
-    Args:
-        mask: 마스크 정보를 담고 있는 딕셔너리 (segmentation 키를 포함)
-    
-    Returns:
-        tuple: (x_median, y_median) 마스크의 중위값 좌표
-    """
-    if not isinstance(mask['segmentation'], list):
-        mask_points = np.where(mask['segmentation'])
-        x_coords = mask_points[1] 
-        y_coords = mask_points[0] 
-    else:
-        coords = np.array(mask['segmentation'][0])
-        x_coords = coords[::2]  
-        y_coords = coords[1::2]  
-    
-    x_median = np.median(x_coords)
-    y_median = np.median(y_coords)
-
-    return x_median, y_median
-
-def get_bbox_center(bbox):
-    """
-    Bounding box의 중심 계산
-    
-    Args:
-        bbox: [x_min, y_min, x_max, y_max] 형태의 bbox 좌표
-    
-    Returns:
-        tuple: (center_x, center_y) bbox의 중심점 좌표
-    """
-    x_min, y_min, x_max, y_max = bbox
-    center_x = (x_min + x_max) / 2
-    center_y = (y_min + y_max) / 2
-    return center_x, center_y
 
 # 메인 함수
 def main(args):
@@ -195,11 +105,7 @@ def main(args):
     
     # --- 출력 디렉토리 설정 ---
     if args.output:
-        post_flow_dir = os.path.join(args.output, "post_flow")
-        os.makedirs(post_flow_dir, exist_ok=True)
-    else:
-        post_flow_dir = None
-
+        os.makedirs(args.output, exist_ok=True)
     
     for idx, path in enumerate(tqdm(input_paths, desc="Processing Images")):
         # 현재 이미지 로드
@@ -283,10 +189,10 @@ def main(args):
             break
 
         # Optical Flow 기반 마스크 필터링
-        # filtered_masks는 hoist hook bbox 아래에 있는 mask
-        # final_filtered_masks는 이 masks 중에서 optical flow가 존재하는 masks
         if flow_magnitude_resized is not None:
             final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=args.threshold_flow)
+            # 마스크 병합 추가
+            final_filtered_masks = merge_overlapping_masks(final_filtered_masks)
         else:
             filtered_masks = []
             print("Optical Flow가 존재하지 않아 모든 마스크를 제거합니다.")
@@ -367,42 +273,27 @@ def main(args):
             name, ext = os.path.splitext(filename)
             
             # Optical Flow 적용 후의 마스크와 위치 시각화 및 저장
-            if post_flow_dir:
-                post_flow_save_path = os.path.join(post_flow_dir, f"{name}_final_filtered_masks_3d{ext}")
-                fig = visualize_with_3d_positions(
-                    image=current_image,
-                    final_filtered_masks=final_filtered_masks,
-                    heavy_objects_positions_3d=heavy_objects_positions_3d,
-                    person_positions_3d=person_positions_3d,
-                    forklift_positions_3d=forklift_positions_3d,
-                    title="Object Positions with Depth Information"
-                )
-                fig.savefig(post_flow_save_path, bbox_inches='tight', pad_inches=0)
-                plt.close()
+            post_flow_save_path = os.path.join(args.output, f"{name}_final_filtered_masks_3d{ext}")
+            fig = visualize_with_3d_positions(
+                image=current_image,
+                final_filtered_masks=final_filtered_masks,
+                heavy_objects_positions_3d=heavy_objects_positions_3d,
+                person_positions_3d=person_positions_3d,
+                forklift_positions_3d=forklift_positions_3d,
+                title="Object Positions with Depth Information"
+            )
+            fig.savefig(post_flow_save_path, bbox_inches='tight', pad_inches=0)
+            plt.close()
         else:
-            # 시각화만 표시
-            # Optical Flow 적용 전의 마스크와 위치 시각화
             visualize_with_positions(
                 image=current_image,
-                heavy_objects_positions=heavy_objects_positions,
+                final_filtered_masks=final_filtered_masks,
                 person_positions=person_positions,
                 forklift_positions=forklift_positions,
-                title="Filtered Masks and Object Positions (Before Flow)"
+                title="Final Filtered Masks and Object Positions (After Flow)"
             )
             plt.show()
             plt.close()
-            
-            # Optical Flow 적용 후의 마스크와 위치 시각화
-            if heavy_objects_positions:
-                visualize_with_positions(
-                    image=current_image,
-                    heavy_objects_positions=heavy_objects_positions,
-                    person_positions=person_positions,
-                    forklift_positions=forklift_positions,
-                    title="Final Filtered Masks and Object Positions (After Flow)"
-                )
-                plt.show()
-                plt.close()
             
         # --- 로깅 ---
         logger.info(
