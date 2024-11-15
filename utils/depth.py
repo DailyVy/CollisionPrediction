@@ -1,6 +1,8 @@
 # utils/depth.py
 
 import numpy as np
+import torch
+import cv2
 
 def mask_has_similar_depth(mask, depth_mag, bbox_depth, threshold=0.1):
     """
@@ -94,3 +96,22 @@ def get_3d_positions(objects, depth_map):
         })
     
     return positions_3d
+
+def process_depth(image, model, processor):
+    """배치 처리를 위한 depth estimation 함수"""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    inputs = processor(images=image, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    
+    with torch.no_grad():
+        outputs = model(**inputs)
+        predicted_depth = outputs.predicted_depth
+    
+    # 예측된 depth를 numpy 배열로 변환
+    depth_map = predicted_depth.squeeze().cpu().numpy()
+    
+    # 원본 이미지 크기로 리사이즈
+    h, w = image.shape[:2]  # 원본 이미지 크기
+    depth_map = cv2.resize(depth_map, (w, h), interpolation=cv2.INTER_LINEAR)
+    
+    return depth_map

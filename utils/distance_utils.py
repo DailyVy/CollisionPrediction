@@ -134,38 +134,52 @@ def create_distance_database(heavy_objects, persons, forklifts):
 
 def print_distance_database(db):
     """데이터베이스 내용을 보기 좋게 출력합니다."""
-    print("\n=== Object Detection and Distance Database ===")
     
-    # Heavy Object 정보 출력
+    print("\n" + "="*50)
+    print("📊 객체 감지 및 거리 데이터베이스")
+    print("="*50)
+    
+    # 프레임 정보
+    print(f"\n⏰ 프레임 시간: {db['frame_info']['timestamp']}")
+    
+    #Heavy Objects 정보
     if db['objects']['heavy_objects']:
-        ho = db['objects']['heavy_objects']
-        print("\nHeavy Objects:")
-        for heavy_object in ho:
-            print(f"\nHeavy Object: {heavy_object['id']}")
-            print(f"Position 3D: (x: {heavy_object['position_3d'][0]:.2f}, y: {heavy_object['position_3d'][1]:.2f}, z: {heavy_object['position_3d'][2]:.2f}m)")
-            print(f"Confidence: {heavy_object['confidence']:.3f}")
+        print("\n🏗️ Heavy Objects:")
+        for ho in db['objects']['heavy_objects']:
+            print(f"\n   {ho['id'].upper()}:")
+            print(f"   위치 (3D): (x: {ho['position_3d'][0]:.2f}, y: {ho['position_3d'][1]:.2f}, z: {ho['position_3d'][2]:.2f}m)")
+            print(f"   신뢰도: {ho['confidence']:.3f}")
     
-    # Person 정보 출력
+    # Person 정보
     if db['objects']['persons']:
-        print("\nPersons:")
+        print("\n👥 작업자:")
         for person in db['objects']['persons']:
-            print(f"\n{person['id'].upper()}:")
-            print(f"Position 3D: (x: {person['position_3d'][0]:.2f}, y: {person['position_3d'][1]:.2f}, z: {person['position_3d'][2]:.2f}m)")
-            print(f"Confidence: {person['confidence']:.3f}")
+            print(f"\n   {person['id'].upper()}:")
+            print(f"   위치 (3D): (x: {person['position_3d'][0]:.2f}, y: {person['position_3d'][1]:.2f}, z: {person['position_3d'][2]:.2f}m)")
+            print(f"   신뢰도: {person['confidence']:.3f}")
     
-    # Forklift 정보 출력
+    # Forklift 정보
     if db['objects']['forklifts']:
-        print("\nForklifts:")
+        print("\n🚛 지게차:")
         for forklift in db['objects']['forklifts']:
-            print(f"\n{forklift['id'].upper()}:")
-            print(f"Position 3D: (x: {forklift['position_3d'][0]:.2f}, y: {forklift['position_3d'][1]:.2f}, z: {forklift['position_3d'][2]:.2f}m)")
-            print(f"Confidence: {forklift['confidence']:.3f}")
+            print(f"\n   {forklift['id'].upper()}:")
+            print(f"   위치 (3D): (x: {forklift['position_3d'][0]:.2f}, y: {forklift['position_3d'][1]:.2f}, z: {forklift['position_3d'][2]:.2f}m)")
+            print(f"   신뢰도: {forklift['confidence']:.3f}")
     
-    # 거리 정보 출력
+    # 거리 정보
     if db['distances']:
-        print("\nDistances:")
+        print("\n📏 거리 정보:")
         for dist in db['distances']:
-            print(f"{dist['from_id']} to {dist['to_id']}: {dist['distance']:.2f}m")
+            from_obj = dist['from_id'].replace('_', ' ').title()
+            to_obj = dist['to_id'].replace('_', ' ').title()
+            details = dist['distance_details']
+            print(f"\n   {from_obj} ↔ {to_obj}:")
+            print(f"      - 2D 거리: {details['pixel_distance']:.1f} pixels")
+            print(f"      - 깊이 차이: {details['depth_difference']:.2f}m")
+            print(f"      - 종합 거리 점수: {details['weighted_score']:.2f}")
+    
+    print("\n" + "="*50)
+        
 
 def calculate_pixel_scale_from_person(person_bbox, image_height=360, real_height_cm=170):
     """

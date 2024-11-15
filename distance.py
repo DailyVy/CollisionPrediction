@@ -12,10 +12,10 @@ import logging
 import json
 from datetime import datetime
 
-from utils.distance_utils import create_distance_database, calculate_pixel_scale_from_person
+from utils.distance_utils import create_distance_database, calculate_pixel_scale_from_person, print_distance_database
 from utils.ovseg import CATSegSegmentationMap, setup_cfg
 from utils.opticalflow import load_unimatch_model, compute_optical_flow, filter_masks_by_avg_flow
-from utils.depth import get_depth_at_position, get_3d_positions
+from utils.depth import get_depth_at_position, get_3d_positions, process_depth
 from utils.visualize import visualize_with_3d_positions, visualize_with_distances
 from utils.mask_utils import mask_overlaps_bbox_x, get_mask_position, merge_overlapping_masks
 from utils.detection_utils import detect_bounding_boxes, get_bbox_center
@@ -24,7 +24,7 @@ from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
 from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator, colors
 
-from transformers import pipeline # DepthAnythingV2
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 # 설정 로거
 def setup_logger():
@@ -126,11 +126,12 @@ def main(args):
     text = 'floor, person, forklift, machine, wall, ceiling' 
     target_class = 0  # floor's index: 0
     
-    # # --- DepthAnythingV2 인자 설정 ---
+    # --- DepthAnythingV2 모델 설정 ---
     print('Loading DepthAnythingV2 Model')
-    depth_model = pipeline(task='depth-estimation',
-                           model='depth-anything/Depth-Anything-V2-Small-hf', device=0)
-    
+    processor = AutoImageProcessor.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+    model = AutoModelForDepthEstimation.from_pretrained("depth-anything/Depth-Anything-V2-Small-hf")
+    model.to(device)
+
     # --- 출력 디렉토리 설정 ---
     if args.output:
         os.makedirs(args.output, exist_ok=True)
@@ -234,9 +235,7 @@ def main(args):
         } for obj in objects if obj['class'] == 'Forklift']
 
         # Depth Estimation
-        pil_image = Image.fromarray(current_image)
-        depth_output = depth_model(pil_image)
-        depth_map = np.array(depth_output['depth'])
+        depth_map = process_depth(current_image, model, processor)
 
         # # 픽셀 스케일 테스트 추가
         # pixel_scale = test_pixel_scale(objects, depth_map)
@@ -264,51 +263,7 @@ def main(args):
         
         # 현재 시간 추가
         distance_db['frame_info']['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        print("\n" + "="*50)
-        print("📊 객체 감지 및 거리 데이터베이스")
-        print("="*50)
-        
-        # 프레임 정보
-        print(f"\n⏰ 프레임 시간: {distance_db['frame_info']['timestamp']}")
-        
-        # Heavy Objects 정보
-        if distance_db['objects']['heavy_objects']:
-            print("\n🏗️ Heavy Objects:")
-            for ho in distance_db['objects']['heavy_objects']:
-                print(f"\n   {ho['id'].upper()}:")
-                print(f"   위치 (3D): (x: {ho['position_3d'][0]:.2f}, y: {ho['position_3d'][1]:.2f}, z: {ho['position_3d'][2]:.2f}m)")
-                print(f"   신뢰도: {ho['confidence']:.3f}")
-        
-        # Person 정보
-        if distance_db['objects']['persons']:
-            print("\n👥 작업자:")
-            for person in distance_db['objects']['persons']:
-                print(f"\n   {person['id'].upper()}:")
-                print(f"   위치 (3D): (x: {person['position_3d'][0]:.2f}, y: {person['position_3d'][1]:.2f}, z: {person['position_3d'][2]:.2f}m)")
-                print(f"   신뢰도: {person['confidence']:.3f}")
-        
-        # Forklift 정보
-        if distance_db['objects']['forklifts']:
-            print("\n🚛 지게차:")
-            for forklift in distance_db['objects']['forklifts']:
-                print(f"\n   {forklift['id'].upper()}:")
-                print(f"   위치 (3D): (x: {forklift['position_3d'][0]:.2f}, y: {forklift['position_3d'][1]:.2f}, z: {forklift['position_3d'][2]:.2f}m)")
-                print(f"   신뢰도: {forklift['confidence']:.3f}")
-        
-        # 거리 정보
-        if distance_db['distances']:
-            print("\n📏 거리 정보:")
-            for dist in distance_db['distances']:
-                from_obj = dist['from_id'].replace('_', ' ').title()
-                to_obj = dist['to_id'].replace('_', ' ').title()
-                details = dist['distance_details']
-                print(f"\n   {from_obj} ↔ {to_obj}:")
-                print(f"      - 2D 거리: {details['pixel_distance']:.1f} pixels")
-                print(f"      - 깊이 차이: {details['depth_difference']:.2f}m")
-                print(f"      - 종합 거리 점수: {details['weighted_score']:.2f}")
-        
-        print("\n" + "="*50)
+        # print_distance_database(distance_db)
         
         # 시각화
         if args.output:
@@ -337,7 +292,6 @@ def main(args):
             json_path = os.path.join(args.output, f"{name}_distances.json")
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(distance_db, f, indent=4, ensure_ascii=False)
-            print(f"\n💾 데이터베이스가 저장되었습니다: {json_path}")
         else:
             visualize_with_distances(
                 image=current_image,
