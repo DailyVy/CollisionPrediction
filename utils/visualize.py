@@ -308,6 +308,6 @@ def visualize_with_distances(
     
     plt.title(title)
     plt.axis('off')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    # plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     
     return plt.gcf()
