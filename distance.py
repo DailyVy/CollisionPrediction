@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
 import os
 import argparse
 from glob import glob
@@ -9,7 +12,10 @@ import cv2
 import time
 from tqdm import tqdm
 import logging
+import json
+from datetime import datetime
 
+from utils.distance_utils import create_distance_database
 from utils.ovseg import CATSegSegmentationMap, setup_cfg
 from utils.opticalflow import load_unimatch_model, compute_optical_flow, filter_masks_by_avg_flow
 from utils.depth import get_depth_at_position, get_3d_positions
@@ -22,7 +28,6 @@ from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator, colors
 
 from transformers import pipeline # DepthAnythingV2
-
 
 # 설정 로거
 def setup_logger():
@@ -55,7 +60,7 @@ def main(args):
         )
         assert input_paths, f"No image files found in directory: {input_path}"
     elif os.path.isfile(input_path):
-        # 단일 파일인 경우, 해당 파일을 리스트로 처리
+        # 단�� 파일인 경우, 해당 파일을 리스트로 처리
         input_paths = args.input
     else:
         raise ValueError(f"Input path is neither a directory nor a file: {input_path}")
@@ -110,16 +115,14 @@ def main(args):
     for idx, path in enumerate(tqdm(input_paths, desc="Processing Images")):
         # 현재 이미지 로드
         img = cv2.imread(path)
-        if img is None:
-            raise FileNotFoundError(f"Image not found at path: {path}")
+        if img is None: raise FileNotFoundError(f"Image not found at path: {path}")
         current_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # 다음 이미지 로드 (Optical Flow를 위해)
         if idx < len(input_paths) - 1:
             next_path = input_paths[idx + 1]
             next_img = cv2.imread(next_path)
-            if next_img is None:
-                raise FileNotFoundError(f"Next image not found at path: {next_path}")
+            if next_img is None: raise FileNotFoundError(f"Next image not found at path: {next_path}")
             next_image = cv2.cvtColor(next_img, cv2.COLOR_BGR2RGB)
         else:
             next_image = None
@@ -133,13 +136,11 @@ def main(args):
         # SAM을 사용한 마스크 생성
         mask_generator_custom = SamAutomaticMaskGeneratorCustom(sam, semantic_map=segmap, target_class=target_class)
         masks = mask_generator_custom.generate(current_image)
-        print(f"Number of masks: {len(masks)}")
         if len(masks) == 0:
             print("No masks generated. Skipping this image.")
             continue
                       
-        # YOLO를 사용한 Bounding Box 감지
-        # 모든 클래스가 관심 객체이므로 target_classes는 None으로 설정 (모든 클래스)
+        # YOLO 객체 감지
         objects = detect_bounding_boxes(
             yolo_model, 
             img, 
@@ -148,149 +149,161 @@ def main(args):
             iou_threshold=args.yolo_iou
         )
         
-        class_bboxes = {'Hoist': [],
-                        'Person': [],
-                        'Magnet': [],
-                        'Forklift': []}
-        
-        for object_info in objects:
-            if object_info['class'] in class_bboxes:
-                class_bboxes[object_info['class']].append(object_info)
-                        
-        hoist_bboxes = class_bboxes['Hoist']
-        
-        if not hoist_bboxes:
-            print("No Hoist bounding boxes detected. 모든 마스크를 삭제하고 다음 이미지로 넘어갑니다.")
+        # Hoist 객체 확인
+        hoist_objects = [obj for obj in objects if obj['class'] == 'Hoist']
+        if not hoist_objects:
+            print("No Hoist detected. 다음 이미지로 넘어갑니다.")
             continue
 
-        # Hoist 클래스에 해당하는 Bounding Box를 사용하여 마스크 필터링
+        # Hoist bbox를 기준으로 마스크 필터링
         filtered_masks = []
-        for bbox_info in hoist_bboxes:
-            bbox = bbox_info['bbox']
-            x_min, y_min, x_max, y_max = bbox
+        for hoist in hoist_objects:
+            x_min, y_min, x_max, y_max = hoist['bbox']
             masks_in_bbox = [mask for mask in masks if mask_overlaps_bbox_x(mask['segmentation'], x_min, x_max)]
             filtered_masks.extend(masks_in_bbox)
 
         # 중복 제거
         filtered_masks = list({id(mask): mask for mask in filtered_masks}.values())
 
-        # 다음 이미지가 있는지 확인하고 optical flow 계산
-        # 이미 로드된 next_image가 있으면 optical flow 계산
+        # Optical flow 계산 및 마스크 필터링
         if next_image is not None:
             image1_tensor = torch.from_numpy(current_image).permute(2, 0, 1).unsqueeze(0).float()
             image2_tensor = torch.from_numpy(next_image).permute(2, 0, 1).unsqueeze(0).float()
             flow_pr, flow_magnitude_resized = compute_optical_flow(flow_model, image1_tensor, image2_tensor, flow_args, device)
             
-            print(f"type(flow_pr): {type(flow_pr)}, shape: {flow_pr.shape}")
-            print(f"flow_magnitude_resized shape: {flow_magnitude_resized.shape}")
+            if flow_magnitude_resized is not None:
+                final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=args.threshold_flow)
+                final_filtered_masks = merge_overlapping_masks(final_filtered_masks)
+            else:
+                print("Optical Flow가 존재하지 않아 모든 마스크를 제거합니다.")
+                continue
         else:
             print("다음 이미지가 없습니다. Optical Flow를 계산할 수 없습니다.")
-            flow_magnitude_resized = None
-            break
-
-        # Optical Flow 기반 마스크 필터링
-        if flow_magnitude_resized is not None:
-            final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=args.threshold_flow)
-            # 마스크 병합 추가
-            final_filtered_masks = merge_overlapping_masks(final_filtered_masks)
-        else:
-            filtered_masks = []
-            print("Optical Flow가 존재하지 않아 모든 마스크를 제거합니다.")
             continue
-        
-        # final_filtered_masks에서 각 heavy object의 위치 계산
-        heavy_objects_positions = []
-        for mask in final_filtered_masks:
-            x_pos, y_pos = get_mask_position(mask)
-            heavy_objects_positions.append({
-                'mask_id': id(mask),  # 마스크 식별을 위한 ID
+
+        # Heavy object 위치 계산
+        heavy_object_info = None
+        if final_filtered_masks:
+            merged_mask = final_filtered_masks[0]
+            x_pos, y_pos = get_mask_position(merged_mask)
+            heavy_object_info = {
                 'position': (x_pos, y_pos),
-                'mask': mask  # 원본 마스크 정보 보존
-            })
-                
-        print(f"Detected {len(heavy_objects_positions)} heavy objects:")
-        for obj in heavy_objects_positions:
-            print(f"Heavy object at position: ({obj['position'][0]:.2f}, {obj['position'][1]:.2f})")
-                        
-        # Person과 Forklift의 위치 계산
-        person_positions = []
-        for person in class_bboxes['Person']:
-            center_x, center_y = get_bbox_center(person['bbox'])
-            person_positions.append({
-                'position': (center_x, center_y),
-                'bbox': person['bbox']  # 원본 bbox 정보 보존
-            })
+                'mask': merged_mask,
+                'bbox': hoist_objects[0]['bbox'],
+                'confidence': hoist_objects[0]['confidence']
+            }
+            print(f"Heavy object detected at position: ({x_pos:.2f}, {y_pos:.2f})")
+        else:
+            print("No heavy object detected after filtering")
+            continue
 
-        forklift_positions = []
-        for forklift in class_bboxes['Forklift']:
-            center_x, center_y = get_bbox_center(forklift['bbox'])
-            forklift_positions.append({
-                'position': (center_x, center_y),
-                'bbox': forklift['bbox']  # 원본 bbox 정보 보존
-            })
-                
-        if person_positions:
-            print(f"\nDetected {len(person_positions)} people:")
-            for idx, person in enumerate(person_positions):
-                print(f"Person {idx + 1} at position: ({person['position'][0]:.2f}, {person['position'][1]:.2f})")
+        # Person과 Forklift 정보 추출
+        person_info = [{
+            'position': get_bbox_center(obj['bbox']),
+            'bbox': obj['bbox'],
+            'confidence': obj['confidence']
+        } for obj in objects if obj['class'] == 'Person']
 
-        if forklift_positions:
-            print(f"\nDetected {len(forklift_positions)} forklifts:")
-            for idx, forklift in enumerate(forklift_positions):
-                print(f"Forklift {idx + 1} at position: ({forklift['position'][0]:.2f}, {forklift['position'][1]:.2f})")
-                
-        # Depth Estimation 수행
+        forklift_info = [{
+            'position': get_bbox_center(obj['bbox']),
+            'bbox': obj['bbox'],
+            'confidence': obj['confidence']
+        } for obj in objects if obj['class'] == 'Forklift']
+
+        # Depth Estimation
         pil_image = Image.fromarray(current_image)
         depth_output = depth_model(pil_image)
         depth_map = np.array(depth_output['depth'])
 
         # 3D 위치 정보 계산
-        heavy_objects_positions_3d = get_3d_positions(heavy_objects_positions, depth_map)
-        person_positions_3d = get_3d_positions(person_positions, depth_map)
-        forklift_positions_3d = get_3d_positions(forklift_positions, depth_map)
+        heavy_object_3d = get_3d_positions([heavy_object_info], depth_map) if heavy_object_info else None
+        person_3d = get_3d_positions(person_info, depth_map)
+        forklift_3d = get_3d_positions(forklift_info, depth_map)
 
-        # 결과 출력
-        print("\nObject positions with depth information:")
-        print("\nHeavy Objects:")
-        for idx, obj in enumerate(heavy_objects_positions_3d):
-            x, y, z = obj['position_3d']
-            print(f"Heavy object {idx + 1} position: (x: {x:.2f}, y: {y:.2f}, z: {z:.2f}m)")
-
-        print("\nPeople:")
-        for idx, person in enumerate(person_positions_3d):
-            x, y, z = person['position_3d']
-            print(f"Person {idx + 1} position: (x: {x:.2f}, y: {y:.2f}, z: {z:.2f}m)")
-
-        print("\nForklifts:")
-        for idx, forklift in enumerate(forklift_positions_3d):
-            x, y, z = forklift['position_3d']
-            print(f"Forklift {idx + 1} position: (x: {x:.2f}, y: {y:.2f}, z: {z:.2f}m)")
-                    
-        # 시각화 코드 수정
+        # 데이터베이스 생성
+        distance_db = create_distance_database(
+            heavy_object_3d,
+            person_3d,
+            forklift_3d
+        )
+        
+        # 현재 시간 추가
+        distance_db['frame_info']['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        print("\n" + "="*50)
+        print("📊 객체 감지 및 거리 데이터베이스")
+        print("="*50)
+        
+        # 프레임 정보
+        print(f"\n⏰ 프레임 시간: {distance_db['frame_info']['timestamp']}")
+        
+        # Heavy Objects 정보
+        if distance_db['objects']['heavy_objects']:
+            print("\n🏗️ Heavy Objects:")
+            for ho in distance_db['objects']['heavy_objects']:
+                print(f"\n   {ho['id'].upper()}:")
+                print(f"   위치 (3D): (x: {ho['position_3d'][0]:.2f}, y: {ho['position_3d'][1]:.2f}, z: {ho['position_3d'][2]:.2f}m)")
+                print(f"   신뢰도: {ho['confidence']:.3f}")
+        
+        # Person 정보
+        if distance_db['objects']['persons']:
+            print("\n👥 작업자:")
+            for person in distance_db['objects']['persons']:
+                print(f"\n   {person['id'].upper()}:")
+                print(f"   위치 (3D): (x: {person['position_3d'][0]:.2f}, y: {person['position_3d'][1]:.2f}, z: {person['position_3d'][2]:.2f}m)")
+                print(f"   신뢰도: {person['confidence']:.3f}")
+        
+        # Forklift 정보
+        if distance_db['objects']['forklifts']:
+            print("\n🚛 지게차:")
+            for forklift in distance_db['objects']['forklifts']:
+                print(f"\n   {forklift['id'].upper()}:")
+                print(f"   위치 (3D): (x: {forklift['position_3d'][0]:.2f}, y: {forklift['position_3d'][1]:.2f}, z: {forklift['position_3d'][2]:.2f}m)")
+                print(f"   신뢰도: {forklift['confidence']:.3f}")
+        
+        # 거리 정보
+        if distance_db['distances']:
+            print("\n📏 거리 정보:")
+            for dist in distance_db['distances']:
+                from_obj = dist['from_id'].replace('_', ' ').title()
+                to_obj = dist['to_id'].replace('_', ' ').title()
+                details = dist['distance_details']
+                print(f"\n   {from_obj} ↔ {to_obj}:")
+                print(f"      - 2D 거리: {details['pixel_distance']:.1f} pixels")
+                print(f"      - 깊이 차이: {details['depth_difference']:.2f}m")
+                print(f"      - 종합 거리 점수: {details['weighted_score']:.2f}")
+        
+        print("\n" + "="*50)
+        
+        # 시각화
         if args.output:
-            # 파일 이름 설정
+            json_path = os.path.join(args.output, f"{os.path.splitext(os.path.basename(path))[0]}_distances.json")
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(distance_db, f, indent=4, ensure_ascii=False)
+            print(f"\n💾 데이터베이스가 저장되었습니다: {json_path}")
+            
             filename = os.path.basename(path)
             name, ext = os.path.splitext(filename)
-            
-            # Optical Flow 적용 후의 마스크와 위치 시각화 및 저장
-            post_flow_save_path = os.path.join(args.output, f"{name}_final_filtered_masks_3d{ext}")
-            fig = visualize_with_3d_positions(
+            output_path = os.path.join(args.output, f"{name}_3d_positions{ext}")
+
+            visualize_with_3d_positions(
                 image=current_image,
-                final_filtered_masks=final_filtered_masks,
-                heavy_objects_positions_3d=heavy_objects_positions_3d,
-                person_positions_3d=person_positions_3d,
-                forklift_positions_3d=forklift_positions_3d,
-                title="Object Positions with Depth Information"
+                heavy_objects_positions_3d=heavy_object_3d,
+                person_positions_3d=person_3d,
+                forklift_positions_3d=forklift_3d,
+                masks=final_filtered_masks,
+                title="3D Positions"
             )
-            fig.savefig(post_flow_save_path, bbox_inches='tight', pad_inches=0)
+            plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
             plt.close()
         else:
-            visualize_with_positions(
+            visualize_with_3d_positions(
                 image=current_image,
-                final_filtered_masks=final_filtered_masks,
-                person_positions=person_positions,
-                forklift_positions=forklift_positions,
-                title="Final Filtered Masks and Object Positions (After Flow)"
+                heavy_objects_positions_3d=heavy_object_3d,
+                person_positions_3d=person_3d,
+                forklift_positions_3d=forklift_3d,
+                masks=final_filtered_masks,
+                title="3D Positions"
             )
             plt.show()
             plt.close()
@@ -302,7 +315,6 @@ def main(args):
                 time.time() - start_time
             )
         )
-        print(f"\nProcessed {path}\n")
 
     # except Exception as e:
     #     print(f"Error processing {path}: {e}")

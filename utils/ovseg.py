@@ -57,7 +57,6 @@ class CATSegSegmentationMap(object):
         
         if text is not None:
             pred = self.predictor.model.sem_seg_head.predictor
-            print(text)
             pred.test_class_texts = text.split(',')
             pred.text_features_test = pred.class_embeddings(pred.test_class_texts, 
                 #imagenet_templates.IMAGENET_TEMPLATES, 
@@ -68,7 +67,6 @@ class CATSegSegmentationMap(object):
 
         predictions = self.predictor(image)
         segmap = predictions['sem_seg'].argmax(dim=0)
-        print(f"type(segmap) : {type(segmap)} \t shape: {segmap.shape}")
         # Convert image from OpenCV BGR format to Matplotlib RGB format.
         image = image[:, :, ::-1]
         visualizer = Visualizer(image, self.metadata, instance_mode=self.instance_mode)

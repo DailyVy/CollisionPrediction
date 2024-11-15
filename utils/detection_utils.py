@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 def detect_bounding_boxes(yolo_model, image, target_classes=None, conf_threshold=0.2, iou_threshold=0.5):
-    results = yolo_model(image, conf=conf_threshold, iou=iou_threshold, device=yolo_model.device)[0]
+    results = yolo_model(image, conf=conf_threshold, iou=iou_threshold, device=yolo_model.device, verbose=False)[0]
     bboxes = []
     for detection in results.boxes:
         x1, y1, x2, y2 = map(int, detection.xyxy[0])

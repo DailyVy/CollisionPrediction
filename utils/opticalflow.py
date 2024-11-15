@@ -205,5 +205,4 @@ def filter_masks_by_avg_flow(masks, flow_magnitude, threshold=1.0):
     for mask in masks:
         if mask_has_flow(mask['segmentation'], flow_magnitude, threshold):
             final_filtered_masks.append(mask)
-    print(f"Optical Flow 평균을 고려한 최종 마스크 수: {len(final_filtered_masks)} (Threshold: {threshold})")
     return final_filtered_masks

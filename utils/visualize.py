@@ -180,10 +180,10 @@ def visualize_with_positions(image, final_filtered_masks, person_positions, fork
 
 def visualize_with_3d_positions(
     image: np.ndarray,
-    final_filtered_masks: List[Dict[str, Any]], 
     person_positions_3d: List[Dict[str, Any]], 
     forklift_positions_3d: List[Dict[str, Any]], 
     heavy_objects_positions_3d: List[Dict[str, Any]], 
+    masks: List[Dict[str, Any]], 
     title: str = "Objects 3D Positions"
 ) -> plt.Figure:
     """
@@ -204,8 +204,8 @@ def visualize_with_3d_positions(
     plt.imshow(image)
     
     # 마스크 시각화
-    if final_filtered_masks:
-        show_anns(final_filtered_masks, alpha=0.5)
+    if masks:
+        show_anns(masks, alpha=0.5)
     
     # Heavy object 위치 표시
     for idx, obj in enumerate(heavy_objects_positions_3d):
