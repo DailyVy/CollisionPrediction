@@ -52,49 +52,45 @@ def filter_masks_by_depth(masks, depth_mag, bbox_depth, threshold=0.1):
     print(f"Depth 유사성을 고려한 최종 마스크 수: {len(final_filtered_masks)} (Threshold: {threshold})")
     return final_filtered_masks
 
-def get_depth_at_position(depth_map, x, y):
+def normalize_depth_to_meters(depth_value, min_depth=0.1, max_depth=10.0):
     """
-    특정 x, y 위치에서의 depth 값을 추출합니다.
-    
-    Args:
-        depth_map (np.ndarray): depth estimation 결과 맵
-        x (float): x 좌표
-        y (float): y 좌표
-    
-    Returns:
-        float: 해당 위치의 depth 값
+    0-255 범위의 depth 값을 실제 거리(미터)로 변환
+    min_depth: 최소 거리 (미터)
+    max_depth: 최대 거리 (미터)
     """
-    # x, y 좌표를 정수로 변환
-    x_int, y_int = int(round(x)), int(round(y))
+    # 0-255 범위를 0-1로 정규화
+    normalized = depth_value / 255.0
     
-    # 이미지 경계 체크
-    height, width = depth_map.shape
-    x_int = max(0, min(x_int, width - 1))
-    y_int = max(0, min(y_int, height - 1))
+    # 0-1 범위를 실제 거리(미터)로 변환
+    depth_meters = normalized * (max_depth - min_depth) + min_depth
     
-    # 해당 위치의 depth 값 반환
-    return float(depth_map[y_int, x_int])
+    return depth_meters
 
-def get_3d_positions(objects_list, depth_map, position_key='position'):
+def get_depth_at_position(position, depth_map):
     """
-    객체 리스트의 2D 위치에 depth 정보를 추가하여 3D 위치로 변환합니다.
-    
-    Args:
-        objects_list (list): 객체 정보를 담은 딕셔너리 리스트
-        depth_map (np.ndarray): depth estimation 결과 맵
-        position_key (str): 위치 정보가 저장된 키 이름
-    
-    Returns:
-        list: depth 정보가 추가된 객체 리스트
+    주어진 위치의 depth 값을 미터 단위로 반환
     """
-    updated_objects = []
-    for obj in objects_list:
-        x, y = obj[position_key]
-        z = get_depth_at_position(depth_map, x, y)
+    x, y = map(int, position)
+    raw_depth = depth_map[y, x]
+    return normalize_depth_to_meters(raw_depth)
+
+def get_3d_positions(objects, depth_map):
+    """
+    객체들의 3D 위치 계산 (z축은 미터 단위)
+    """
+    if not objects:
+        return []
+    
+    positions_3d = []
+    for obj in objects:
+        x, y = obj['position']
+        depth_meters = get_depth_at_position((x, y), depth_map)
         
-        # 기존 객체 정보 복사 및 3D 위치 추가
-        updated_obj = obj.copy()
-        updated_obj['position_3d'] = (x, y, z)
-        updated_objects.append(updated_obj)
+        positions_3d.append({
+            'position': obj['position'],
+            'bbox': obj.get('bbox', None),
+            'confidence': obj['confidence'],
+            'position_3d': (x, y, depth_meters)
+        })
     
-    return updated_objects
+    return positions_3d

@@ -1,6 +1,3 @@
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
-
 import os
 import argparse
 from glob import glob
@@ -15,11 +12,11 @@ import logging
 import json
 from datetime import datetime
 
-from utils.distance_utils import create_distance_database
+from utils.distance_utils import create_distance_database, calculate_pixel_scale_from_person
 from utils.ovseg import CATSegSegmentationMap, setup_cfg
 from utils.opticalflow import load_unimatch_model, compute_optical_flow, filter_masks_by_avg_flow
 from utils.depth import get_depth_at_position, get_3d_positions
-from utils.visualize import mask_visualize_and_save, show_anns, visualize_with_3d_positions, visualize_with_positions
+from utils.visualize import visualize_with_3d_positions, visualize_with_distances
 from utils.mask_utils import mask_overlaps_bbox_x, get_mask_position, merge_overlapping_masks
 from utils.detection_utils import detect_bounding_boxes, get_bbox_center
 
@@ -39,6 +36,32 @@ def setup_logger():
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
+
+def test_pixel_scale(objects, depth_map, image_height=360):
+    """
+    첫 번째 감지된 사람을 기준으로 픽셀 스케일 계산
+    """
+    person_objects = [obj for obj in objects if obj['class'] == 'Person']
+    if person_objects:
+        first_person = person_objects[0]
+        scale_info = calculate_pixel_scale_from_person(first_person['bbox'], image_height)
+        
+        print("\n" + "="*50)
+        print("📏 픽셀 스케일 테스트 결과")
+        print("="*50)
+        print(f"위치: 화면 아래에서 {scale_info['relative_position']*100:.1f}% 지점")
+        print(f"보정 계수: {scale_info['correction_factor']:.2f}")
+        print(f"원본 픽셀 스케일: {scale_info['original_pixels_per_meter']:.2f} pixels/meter")
+        print(f"보정된 픽셀 스케일: {scale_info['pixels_per_meter']:.2f} pixels/meter")
+        
+        # depth 값도 함께 출력하여 비교
+        x, y = get_bbox_center(first_person['bbox'])
+        depth_value = depth_map[int(y), int(x)]
+        print(f"해당 위치의 depth 값: {depth_value}")
+        print("="*50 + "\n")
+        
+        return scale_info
+    return None
 
 # 메인 함수
 def main(args):
@@ -60,7 +83,7 @@ def main(args):
         )
         assert input_paths, f"No image files found in directory: {input_path}"
     elif os.path.isfile(input_path):
-        # 단�� 파일인 경우, 해당 파일을 리스트로 처리
+        # 단일 파일인 경우, 해당 파일을 리스트로 처리
         input_paths = args.input
     else:
         raise ValueError(f"Input path is neither a directory nor a file: {input_path}")
@@ -175,7 +198,7 @@ def main(args):
                 final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=args.threshold_flow)
                 final_filtered_masks = merge_overlapping_masks(final_filtered_masks)
             else:
-                print("Optical Flow가 존재하지 않아 모든 마스크를 제거합니다.")
+                print("Optical Flow가 존재하지 않아 모든 마스크 제거합니다.")
                 continue
         else:
             print("다음 이미지가 없습니다. Optical Flow를 계산할 수 없습니다.")
@@ -214,6 +237,18 @@ def main(args):
         pil_image = Image.fromarray(current_image)
         depth_output = depth_model(pil_image)
         depth_map = np.array(depth_output['depth'])
+
+        # # 픽셀 스케일 테스트 추가
+        # pixel_scale = test_pixel_scale(objects, depth_map)
+        # if pixel_scale:
+        #     print("\n" + "="*50)
+        #     print("📏 픽셀 스케일 테스트 결과")
+        #     print("="*50)
+        #     print(f"위치: 화면 아래에서 {pixel_scale['relative_position']*100:.1f}% 지점")
+        #     print(f"보정 계수: {pixel_scale['correction_factor']:.2f}")
+        #     print(f"원본 픽셀 스케일: {pixel_scale['original_pixels_per_meter']:.2f} pixels/meter")
+        #     print(f"보정된 픽셀 스케일: {pixel_scale['pixels_per_meter']:.2f} pixels/meter")
+        #     print("="*50 + "\n")
 
         # 3D 위치 정보 계산
         heavy_object_3d = get_3d_positions([heavy_object_info], depth_map) if heavy_object_info else None
@@ -284,26 +319,34 @@ def main(args):
             
             filename = os.path.basename(path)
             name, ext = os.path.splitext(filename)
-            output_path = os.path.join(args.output, f"{name}_3d_positions{ext}")
-
-            visualize_with_3d_positions(
+            output_path = os.path.join(args.output, f"{name}_distances{ext}")
+            
+            visualize_with_distances(
                 image=current_image,
-                heavy_objects_positions_3d=heavy_object_3d,
+                heavy_objects_positions_3d=heavy_object_3d if heavy_object_3d else [],
                 person_positions_3d=person_3d,
                 forklift_positions_3d=forklift_3d,
+                distances=distance_db['distances'],
                 masks=final_filtered_masks,
-                title="3D Positions"
+                title="3D Positions and Distances"
             )
             plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
             plt.close()
+            
+            # JSON 저장
+            json_path = os.path.join(args.output, f"{name}_distances.json")
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(distance_db, f, indent=4, ensure_ascii=False)
+            print(f"\n💾 데이터베이스가 저장되었습니다: {json_path}")
         else:
-            visualize_with_3d_positions(
+            visualize_with_distances(
                 image=current_image,
-                heavy_objects_positions_3d=heavy_object_3d,
+                heavy_objects_positions_3d=heavy_object_3d if heavy_object_3d else [],
                 person_positions_3d=person_3d,
                 forklift_positions_3d=forklift_3d,
+                distances=distance_db['distances'],
                 masks=final_filtered_masks,
-                title="3D Positions"
+                title="3D Positions and Distances"
             )
             plt.show()
             plt.close()

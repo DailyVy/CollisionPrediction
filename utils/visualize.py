@@ -230,3 +230,84 @@ def visualize_with_3d_positions(
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     
     return plt.gcf()
+
+def visualize_with_distances(
+    image,
+    heavy_objects_positions_3d,
+    person_positions_3d,
+    forklift_positions_3d,
+    distances,
+    masks=None,
+    title="3D Positions and Distances"
+):
+    """
+    3D 위치와 객체 간 거리를 시각화합니다.
+    """
+    plt.figure(figsize=(12, 12))
+    plt.imshow(image)
+    
+    # 마스크 시각화
+    if masks:
+        show_anns(masks, alpha=0.5)
+    
+    # Heavy object 위치 표시
+    for idx, obj in enumerate(heavy_objects_positions_3d):
+        x, y, z = obj['position_3d']
+        plt.plot(x, y, 'r*', markersize=15, label=f'Heavy Object {idx+1}')
+    
+    # 사람 위치 표시
+    for idx, person in enumerate(person_positions_3d):
+        x, y, z = person['position_3d']
+        plt.plot(x, y, 'go', markersize=10, label=f'Person {idx+1}')
+    
+    # 지게차 위치 표시
+    for idx, forklift in enumerate(forklift_positions_3d):
+        x, y, z = forklift['position_3d']
+        plt.plot(x, y, 'bs', markersize=10, label=f'Forklift {idx+1}')
+    
+    # 거리 표시
+    for dist in distances:
+        from_id = dist['from_id']
+        to_id = dist['to_id']
+        details = dist['distance_details']
+        
+        # 시작점과 끝점 찾기
+        if 'heavy_object' in from_id:
+            idx = int(from_id.split('_')[-1])
+            start = heavy_objects_positions_3d[idx]['position_3d'][:2]
+        elif 'person' in from_id:
+            idx = int(from_id.split('_')[-1])
+            start = person_positions_3d[idx]['position_3d'][:2]
+        elif 'forklift' in from_id:
+            idx = int(from_id.split('_')[-1])
+            start = forklift_positions_3d[idx]['position_3d'][:2]
+            
+        if 'heavy_object' in to_id:
+            idx = int(to_id.split('_')[-1])
+            end = heavy_objects_positions_3d[idx]['position_3d'][:2]
+        elif 'person' in to_id:
+            idx = int(to_id.split('_')[-1])
+            end = person_positions_3d[idx]['position_3d'][:2]
+        elif 'forklift' in to_id:
+            idx = int(to_id.split('_')[-1])
+            end = forklift_positions_3d[idx]['position_3d'][:2]
+        
+        # 선 그리기
+        plt.plot([start[0], end[0]], [start[1], end[1]], '-', color='red', alpha=0.3)
+        
+        # 거리 텍스트 표시
+        mid_x = (start[0] + end[0]) / 2
+        mid_y = (start[1] + end[1]) / 2
+        plt.annotate(
+            f'{details["weighted_score"]:.1f}m',
+            (mid_x, mid_y),
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'),
+            ha='center',
+            va='center'
+        )
+    
+    plt.title(title)
+    plt.axis('off')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    return plt.gcf()

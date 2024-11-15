@@ -5,46 +5,52 @@ def calculate_distance(pos1, pos2):
     """두 3D 위치 간의 유클리드 거리 계산."""
     return np.sqrt(sum((a - b) ** 2 for a, b in zip(pos1, pos2)))
 
-def calculate_3d_distance(pos1, pos2, w_pixel=1.0, w_depth=2.0):
+def calculate_3d_distance(pos1, pos2, image_height=360):
     """
-    CCTV 환경에 적합한 3D 거리를 계산합니다.
-    2D 픽셀 거리와 깊이 차이를 별도로 계산하고 가중치를 적용합니다.
+    CCTV 환경에 맞는 3D 거리 계산
     
     Args:
-        pos1: (x, y, z) 첫 번째 위치 (x,y는 픽셀, z는 미터)
-        pos2: (x, y, z) 두 번째 위치 (x,y는 픽셀, z는 미터)
-        w_pixel: 픽셀 거리에 대한 가중치 (기본값: 1.0)
-        w_depth: 깊이 차이에 대한 가중치 (기본값: 2.0)
-    
-    Returns:
-        dict: {
-            'total_distance': 종합적인 거리 점수,
-            'pixel_distance': 2D 픽셀 거리,
-            'depth_difference': 깊이 차이(미터),
-            'weighted_score': 가중치가 적용된 최종 점수
-        }
+        pos1: (x, y, z) 첫 번째 위치
+        pos2: (x, y, z) 두 번째 위치
+        image_height: 이미지 세로 크기
     """
     x1, y1, z1 = pos1
     x2, y2, z2 = pos2
     
+    # 두 점의 중간 y 위치를 기준으로 보정 계수 계산
+    avg_y = (y1 + y2) / 2
+    relative_position = avg_y / image_height
+    position_correction = 1 + (1 - relative_position)
+    
+    # 테스트 결과 기준: 78.6% 지점에서 54.27 pixels/meter
+    base_scale = 54.27  # 기준 픽셀 스케일
+    base_position = 0.786  # 기준 위치 (78.6%)
+    
+    # 현재 위치에 따른 픽셀 스케일 조정
+    position_diff = relative_position - base_position
+    adjusted_scale = base_scale * (1 - position_diff)  # 위치 차이에 따른 스케일 조정
+    
     # 2D 픽셀 거리 계산
     pixel_distance = np.sqrt((x2-x1)**2 + (y2-y1)**2)
     
-    # 깊이 차이 계산 (미터)
-    depth_difference = abs(z2-z1)
+    # 픽셀 거리를 실제 거리(미터)로 변환
+    real_distance = pixel_distance / adjusted_scale
     
-    # 픽셀 거리를 대략적인 미터 단위로 정규화 (예시 값, 실제 환경에 맞게 조정 필요)
-    # 예: 1920x1080 해상도에서 1미터가 약 100픽셀이라고 가정
-    normalized_pixel_distance = pixel_distance / 100.0
+    # depth 차이를 실제 거리로 변환 (0-255 범위를 0.1-10m 범위로 변환)
+    depth_diff = abs(z2 - z1)
+    depth_meters = depth_diff * (10.0 - 0.1) / 255.0
     
-    # 가중치가 적용된 최종 거리 점수 계산
-    weighted_score = (w_pixel * normalized_pixel_distance + w_depth * depth_difference) / (w_pixel + w_depth)
+    # 3D 유클리드 거리 계산
+    distance_3d = np.sqrt(real_distance**2 + depth_meters**2)
     
     return {
-        'total_distance': weighted_score,
+        'distance_3d': distance_3d,
         'pixel_distance': pixel_distance,
-        'depth_difference': depth_difference,
-        'weighted_score': weighted_score
+        'depth_difference': depth_meters,
+        'weighted_score': distance_3d,
+        'pixel_scale': adjusted_scale,
+        'relative_position': relative_position,
+        'position_correction': position_correction
     }
 
 def create_distance_database(heavy_objects, persons, forklifts):
@@ -160,3 +166,36 @@ def print_distance_database(db):
         print("\nDistances:")
         for dist in db['distances']:
             print(f"{dist['from_id']} to {dist['to_id']}: {dist['distance']:.2f}m")
+
+def calculate_pixel_scale_from_person(person_bbox, image_height=360, real_height_cm=170):
+    """
+    사람의 bbox와 실제 키를 기준으로 픽셀 스케일 계산 (위치 기반 보정 포함)
+    
+    Args:
+        person_bbox: (x_min, y_min, x_max, y_max) 형태의 bbox
+        image_height: 이미지 세로 크기
+        real_height_cm: 실제 키 (cm)
+    """
+    x_min, y_min, x_max, y_max = person_bbox
+    bbox_height_pixels = y_max - y_min
+    
+    # 화면에서의 상대적 위치 계산 (0: 맨 위, 1: 맨 아래)
+    relative_position = y_max / image_height
+    
+    # 위치 기반 보정 계수 계산
+    # 예: 화면 아래쪽(1.0)은 보정 없음, 화면 위쪽(0.0)은 최대 2배까지 보정
+    position_correction = 1 + (1 - relative_position)
+    
+    # cm를 m로 변환
+    real_height_m = real_height_cm / 100
+    
+    # 보정된 픽셀 스케일 계산
+    pixels_per_meter = (bbox_height_pixels * position_correction) / real_height_m
+    
+    return {
+        'pixels_per_meter': pixels_per_meter,
+        'relative_position': relative_position,
+        'correction_factor': position_correction,
+        'original_pixels_per_meter': bbox_height_pixels / real_height_m
+    }
+
