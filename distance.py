@@ -136,13 +136,19 @@ def main(args):
     if args.output:
         os.makedirs(args.output, exist_ok=True)
     
-    for idx, path in enumerate(tqdm(input_paths, desc="Processing Images")):
-        # 현재 이미지 로드
+    for idx, path in enumerate(tqdm(input_paths, desc="이미지 처리 중")):
+        stage_times = {}
+        total_start_time = time.time()
+        
+        # 이미지 로드
+        stage_start = time.time()
         img = cv2.imread(path)
         if img is None: raise FileNotFoundError(f"Image not found at path: {path}")
         current_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        stage_times['이미지 로드'] = time.time() - stage_start
 
-        # 다음 이미지 로드 (Optical Flow를 위해)
+        # 다음 이미지 로드
+        stage_start = time.time()
         if idx < len(input_paths) - 1:
             next_path = input_paths[idx + 1]
             next_img = cv2.imread(next_path)
@@ -151,28 +157,25 @@ def main(args):
         else:
             next_image = None
             break
-        
-        start_time = time.time()
+        stage_times['다음 이미지 로드'] = time.time() - stage_start
 
-        # CAT-Seg를 사용한 세그멘테이션
+        # CAT-Seg 세그멘테이션
+        stage_start = time.time()
         predictions, visualized_output, segmap = catseg_map.run_on_image_custom_text(img, text)
+        stage_times['CAT-Seg 세그멘테이션'] = time.time() - stage_start
 
-        # SAM을 사용한 마스크 생성
+        # SAM 마스크 생성
+        stage_start = time.time()
         mask_generator_custom = SamAutomaticMaskGeneratorCustom(sam, semantic_map=segmap, target_class=target_class)
         masks = mask_generator_custom.generate(current_image)
-        if len(masks) == 0:
-            print("No masks generated. Skipping this image.")
-            continue
-                      
+        stage_times['SAM 마스크 생성'] = time.time() - stage_start
+
         # YOLO 객체 감지
-        objects = detect_bounding_boxes(
-            yolo_model, 
-            img, 
-            target_classes=None, 
-            conf_threshold=args.yolo_conf, 
-            iou_threshold=args.yolo_iou
-        )
-        
+        stage_start = time.time()
+        objects = detect_bounding_boxes(yolo_model, img, target_classes=None, 
+                                      conf_threshold=args.yolo_conf, iou_threshold=args.yolo_iou)
+        stage_times['YOLO 객체 감지'] = time.time() - stage_start
+
         # Hoist 객체 확인
         hoist_objects = [obj for obj in objects if obj['class'] == 'Hoist']
         if not hoist_objects:
@@ -189,12 +192,16 @@ def main(args):
         # 중복 제거
         filtered_masks = list({id(mask): mask for mask in filtered_masks}.values())
 
-        # Optical flow 계산 및 마스크 필터링
+        # Optical Flow 계산
+        stage_start = time.time()
         if next_image is not None:
             image1_tensor = torch.from_numpy(current_image).permute(2, 0, 1).unsqueeze(0).float()
             image2_tensor = torch.from_numpy(next_image).permute(2, 0, 1).unsqueeze(0).float()
             flow_pr, flow_magnitude_resized = compute_optical_flow(flow_model, image1_tensor, image2_tensor, flow_args, device)
-            
+        stage_times['Optical Flow 계산'] = time.time() - stage_start
+
+        # Optical flow 계산 및 마스크 필터링
+        if next_image is not None:
             if flow_magnitude_resized is not None:
                 final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=args.threshold_flow)
                 final_filtered_masks = merge_overlapping_masks(final_filtered_masks)
@@ -235,31 +242,25 @@ def main(args):
         } for obj in objects if obj['class'] == 'Forklift']
 
         # Depth Estimation
+        stage_start = time.time()
         depth_map = process_depth(current_image, model, processor)
-
-        # # 픽셀 스케일 테스트 추가
-        # pixel_scale = test_pixel_scale(objects, depth_map)
-        # if pixel_scale:
-        #     print("\n" + "="*50)
-        #     print("📏 픽셀 스케일 테스트 결과")
-        #     print("="*50)
-        #     print(f"위치: 화면 아래에서 {pixel_scale['relative_position']*100:.1f}% 지점")
-        #     print(f"보정 계수: {pixel_scale['correction_factor']:.2f}")
-        #     print(f"원본 픽셀 스케일: {pixel_scale['original_pixels_per_meter']:.2f} pixels/meter")
-        #     print(f"보정된 픽셀 스케일: {pixel_scale['pixels_per_meter']:.2f} pixels/meter")
-        #     print("="*50 + "\n")
+        stage_times['Depth Estimation'] = time.time() - stage_start
 
         # 3D 위치 정보 계산
+        stage_start = time.time()
         heavy_object_3d = get_3d_positions([heavy_object_info], depth_map) if heavy_object_info else None
         person_3d = get_3d_positions(person_info, depth_map)
         forklift_3d = get_3d_positions(forklift_info, depth_map)
+        stage_times['3D 위치 계산'] = time.time() - stage_start
 
         # 데이터베이스 생성
+        stage_start = time.time()
         distance_db = create_distance_database(
             heavy_object_3d,
             person_3d,
             forklift_3d
         )
+        stage_times['데이터베이스 생성'] = time.time() - stage_start
         
         # 현재 시간 추가
         distance_db['frame_info']['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -305,13 +306,20 @@ def main(args):
             plt.show()
             plt.close()
             
-        # --- 로깅 ---
-        logger.info(
-            "{}: Processed in {:.2f}s".format(
-                path,
-                time.time() - start_time
-            )
-        )
+        total_time = time.time() - total_start_time
+        
+        # 처리 시간 출력
+        print("\n" + "="*50)
+        print(f"🕒 처리 시간 분석 - {os.path.basename(path)}")
+        print("="*50)
+        for stage, duration in stage_times.items():
+            print(f"{stage:<25}: {duration:>6.2f}초 ({duration/total_time*100:>5.1f}%)")
+        print("-"*50)
+        print(f"{'총 처리 시간':<25}: {total_time:>6.2f}초 (100.0%)")
+        print("="*50 + "\n")
+
+        # 로깅
+        logger.info(f"{path}: 총 처리 시간 {total_time:.2f}초")
 
     # except Exception as e:
     #     print(f"Error processing {path}: {e}")
