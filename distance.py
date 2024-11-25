@@ -100,10 +100,19 @@ def main(args):
     # --- SAM 및 UniMatch 모델 로드 ---
     device = args.device
     
-    sam = sam_model_registry["vit_h"](checkpoint=args.sam_checkpoint)
+    if args.model_type == "vit_h":
+        sam_checkpoint = "sam_vit_h_4b8939.pth"
+    elif args.model_type == "vit_l":
+        sam_checkpoint = "sam_vit_l_0b3195.pth"
+    elif args.model_type == "vit_b":
+        sam_checkpoint = "sam_vit_b_01ec64.pth"
+    else:
+        raise ValueError(f"Unsupported model_type: {args.model_type}")
+    
+    sam = sam_model_registry[args.model_type](checkpoint=sam_checkpoint)
     sam.to(device=device)
     sam.eval()
-    print(f'Loaded Segment Anything Model: vit_h')
+    print(f'Loaded Segment Anything Model: vit_b')
     
     flow_model = load_unimatch_model(args.flow_checkpoint, device=device)
     
@@ -336,7 +345,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--input", nargs='+', required=True, help="Input image path(s) or directory")
     parser.add_argument("--output", type=str, default=None, help="Output directory or file path")
-    parser.add_argument("--sam_checkpoint", default="sam_vit_h_4b8939.pth", type=str, help="SAM model checkpoint path")
+    parser.add_argument("--model_type", default="vit_b", type=str, choices=["vit_h", "vit_l", "vit_b"], help="Model type for SAM (vit_h, vit_l, vit_b)")
     parser.add_argument("--flow_checkpoint", default="unimatch/pretrained/gmflow-scale2-regrefine6-mixdata-train320x576-4e7b215d.pth", type=str, help="UniMatch Optical Flow model checkpoint path")
     parser.add_argument("--threshold_flow", type=float, default=2.0, help="Optical flow threshold value")
     
