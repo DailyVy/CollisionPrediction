@@ -37,3 +37,12 @@ wget -P pretrained https://s3.eu-central-1.amazonaws.com/avg-projects/unimatch/p
 ```bash
 python distance.py --input /path/to/image --output /path/to/save/ --opts MODEL.WEIGHTS CAT-Seg/model_large.pth
 ```
+
+### CAT-Seg + FastSAM + YOLO + OF
+1. CAT-Seg를 통해 floor를 인식 (CAT-Seg github에서 weight download 필요)
+2. FastSAM로 multi masks를 구하고, floor에 해당하는 부분만 filtering하여 filtered masks를 얻어냄
+3. YOLO로 검출된 Hoist hook 아래에 있는 mask만 filtering - candiadate masks
+4. Optical flow를 측정하여 특정 threshold(default=1.0) 이하는 제외
+```bash
+python distance_fastsam.py --input /path/to/image --output /path/to/save/ --opts MODEL.WEIGHTS CAT-Seg/model_large.pth
+```
