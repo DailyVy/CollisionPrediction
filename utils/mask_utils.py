@@ -47,3 +47,43 @@ def merge_overlapping_masks(masks):
     }
     
     return [merged_mask_dict]
+
+def merge_overlapping_masks_v2(masks):
+    """여러 개의 마스크를 하나로 합칩니다."""
+    if not masks:
+        return []
+    
+    # 모든 마스크의 segmentation을 하나의 배열로 합침
+    merged_mask = np.zeros_like(masks[0], dtype=bool)
+    for mask in masks:
+        merged_mask = np.logical_or(merged_mask, mask)
+    
+    # 새로운 마스크 딕셔너리 생성
+    merged_mask_dict = {
+        'segmentation': merged_mask,
+        'area': float(np.sum(merged_mask))  # 합쳐진 마스크의 면적
+    }
+    
+    return [merged_mask_dict]
+
+def filter_masks_by_segmap(masks, segmap, target_class=0):
+    """
+    Filters FastSAM masks based on overlap with target class in segmap
+    Args:
+        masks: FastSAM mask results
+        segmap: Semantic segmentation map from CAT-Seg
+        target_class: Target class index (0 for floor)
+    Returns:
+        filtered_masks: List of masks that overlap with target class
+    """
+    filtered_masks = []
+    target_area = (segmap == target_class).cpu().numpy()
+    
+    for mask in masks:
+        mask_np = mask.data.cpu().numpy()
+        # Calculate overlap with target class
+        overlap = np.logical_and(mask_np.squeeze(), target_area)
+        if np.any(overlap):
+            filtered_masks.append(mask_np)
+    
+    return filtered_masks

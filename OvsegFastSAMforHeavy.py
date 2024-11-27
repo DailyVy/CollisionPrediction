@@ -13,6 +13,11 @@ import numpy as np
 import cv2
 
 from segment_anything import sam_model_registry, SamPredictor, build_sam, SamAutomaticMaskGeneratorCustom # SAM
+# from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
+from ultralytics import YOLO, FastSAM
+from ultralytics.models.fastsam import FastSAMPredictor
+from ultralytics.utils.plotting import Annotator, colors
+
 
 import tempfile
 import time
@@ -120,6 +125,27 @@ def setup_cfg(args):
     cfg.freeze()
     return cfg
 
+def filter_masks_by_segmap(masks, segmap, target_class=0):
+    """
+    Filters FastSAM masks based on overlap with target class in segmap
+    Args:
+        masks: FastSAM mask results
+        segmap: Semantic segmentation map from CAT-Seg
+        target_class: Target class index (0 for floor)
+    Returns:
+        filtered_masks: List of masks that overlap with target class
+    """
+    filtered_masks = []
+    target_area = (segmap == target_class).cpu().numpy()
+    
+    for mask in masks:
+        mask_np = mask.data.cpu().numpy()
+        # Calculate overlap with target class
+        overlap = np.logical_and(mask_np.squeeze(), target_area)
+        if np.any(overlap):
+            filtered_masks.append(mask_np)
+    
+    return filtered_masks
 
 def get_parser():
     parser = argparse.ArgumentParser(description="Detectron2 demo for builtin configs")
@@ -171,6 +197,35 @@ def show_anns(anns, alpha=0.35):
         color_mask = np.concatenate([np.random.random(3), [alpha]])
         img[m] = color_mask
     ax.imshow(img)
+    
+def show_masks(masks, alpha=0.35):
+    """
+    Visualizes FastSAM masks
+    Args:
+        masks: FastSAM mask results (Tensor shape [N, H, W])
+        alpha: Transparency value for visualization
+    """
+    if len(masks) == 0:
+        return
+        
+    ax = plt.gca()
+    ax.set_autoscale_on(False)
+    
+    # Create empty RGBA image
+    h, w = masks[0].shape[1:]  # Get height and width from first mask
+    img = np.ones((h, w, 4))
+    img[:,:,3] = 0
+    
+    # Convert each mask tensor to numpy and visualize
+    for mask in masks:
+        # Convert tensor mask to numpy boolean array
+        m = mask.squeeze().astype(bool)
+        
+        # Generate random color with alpha
+        color_mask = np.concatenate([np.random.random(3), [alpha]])
+        img[m] = color_mask
+        
+    ax.imshow(img)
 
 if __name__ == "__main__":
     # OV-Seg: CAT-Seg
@@ -189,13 +244,8 @@ if __name__ == "__main__":
     
     # Segmentation: SAM load
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    sam_checkpoint = "sam_vit_b_01ec64.pth" # "sam_vit_l_0b3195.pth", "sam_vit_b_01ec64.pth", "sam_vit_h_4b8939.pth"
-    sam_model_type = "vit_b" # vit_l, vit_b, vit_h
-
-    print(f'Loading Segment Anything Model: {sam_model_type}')
-    
-    sam = sam_model_registry[sam_model_type](checkpoint=sam_checkpoint)
-    sam.to(device=device)
+    fast_sam = FastSAM("FastSAM-s.pt")
+    print(f'Loading Fast Segment Anything Model: FastSAM-s.pt')
 
     if args.input:
         input_paths = []
@@ -222,10 +272,14 @@ if __name__ == "__main__":
             start_time = time.time()
             predictions, visualized_output, segmap = catseg_map.run_on_image_custom_text(img, text)
             
-            # predictor = SamPredictor(sam)
-            mask_generator_custom = SamAutomaticMaskGeneratorCustom(sam, semantic_map=segmap, target_class=target_class)
-            masks = mask_generator_custom.generate(image)
-            print(masks[0].keys())  
+            everything_results = fast_sam(image, device=device, retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)[0]
+            masks = everything_results.masks
+
+            # segmap 기반 필터링 적용
+            masks = filter_masks_by_segmap(masks, segmap, target_class=0)
+            print(f"mask: {type(masks)}") # <class 'ultralytics.engine.results.Masks'>
+            print(f"mask: {masks[0].shape}") #  torch.Size([1, 360, 640])
+
             # --- Drawing Bbox & y_threshold ---
             drawing = False  # 마우스 버튼이 눌렸는지 여부
             start_point = (-1, -1)  # BBox의 시작점
@@ -307,9 +361,17 @@ if __name__ == "__main__":
                 return not (mask_x_max < x_min or mask_x_min > x_max)
 
             filtered_masks = []
+            
             for mask in masks:
-                if mask_overlaps_bbox_x(mask['segmentation'], x_threshold_min, x_threshold_max):
+                if mask_overlaps_bbox_x(mask.squeeze(0), x_threshold_min, x_threshold_max):
                     filtered_masks.append(mask)
+            
+            # for mask_data in masks:
+            #     mask = mask_data.data.cpu().numpy()
+            #     print("mask type:", type(mask)) # mask type: <class 'numpy.ndarray'>
+            #     print("mask shape:", np.shape(mask)) # mask shape: (1, 360, 640)
+            #     if mask_overlaps_bbox_x(mask.squeeze(0), x_threshold_min, x_threshold_max):
+            #         filtered_masks.append(mask)
 
             print(f"전체 마스크 수: {len(masks)}, 필터링된 마스크 수: {len(filtered_masks)}")
 
@@ -322,7 +384,7 @@ if __name__ == "__main__":
             # --- 선택된 마스크 시각화 ---
             plt.figure(figsize=(10,10))
             plt.imshow(image_with_bboxes)
-            show_anns(filtered_masks, alpha=0.5)
+            show_masks(filtered_masks, alpha=0.5)
             plt.axis('off')
             plt.title("Filtered Masks Below BBox")
             
@@ -352,3 +414,5 @@ if __name__ == "__main__":
                 plt.show()
                 plt.close()
             
+
+

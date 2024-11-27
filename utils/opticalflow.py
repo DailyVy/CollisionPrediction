@@ -206,3 +206,21 @@ def filter_masks_by_avg_flow(masks, flow_magnitude, threshold=1.0):
         if mask_has_flow(mask['segmentation'], flow_magnitude, threshold):
             final_filtered_masks.append(mask)
     return final_filtered_masks
+
+def filter_masks_by_avg_flow_v2(masks, flow_magnitude, threshold=1.0):
+    """
+    마스크의 평균 Optical Flow를 기반으로 마스크를 필터링합니다.
+
+    Args:
+        masks (list): 마스크 리스트.
+        flow_magnitude (np.ndarray): Optical Flow Magnitude 배열.
+        threshold (float): Flow magnitude 평균 임계값.
+
+    Returns:
+        list: 평균 Flow Magnitude가 임계값을 초과하는 마스크 리스트.
+    """
+    final_filtered_masks = []
+    for mask in masks:
+        if mask_has_flow(mask, flow_magnitude, threshold):
+            final_filtered_masks.append(mask)
+    return final_filtered_masks

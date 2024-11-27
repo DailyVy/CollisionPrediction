@@ -14,14 +14,15 @@ from datetime import datetime
 
 from utils.distance_utils import create_distance_database, calculate_pixel_scale_from_person, print_distance_database
 from utils.ovseg import CATSegSegmentationMap, setup_cfg
-from utils.opticalflow import load_unimatch_model, compute_optical_flow, filter_masks_by_avg_flow
+from utils.opticalflow import load_unimatch_model, compute_optical_flow, filter_masks_by_avg_flow_v2
 from utils.depth import get_depth_at_position, get_3d_positions, process_depth
 from utils.visualize import visualize_with_3d_positions, visualize_with_distances
-from utils.mask_utils import mask_overlaps_bbox_x, get_mask_position, merge_overlapping_masks
+from utils.mask_utils import mask_overlaps_bbox_x, get_mask_position, merge_overlapping_masks_v2, filter_masks_by_segmap
 from utils.detection_utils import detect_bounding_boxes, get_bbox_center
 
-from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
-from ultralytics import YOLO
+# from segment_anything import sam_model_registry, SamAutomaticMaskGeneratorCustom
+from ultralytics import YOLO, FastSAM
+from ultralytics.models.fastsam import FastSAMPredictor
 from ultralytics.utils.plotting import Annotator, colors
 
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
@@ -99,20 +100,10 @@ def main(args):
 
     # --- SAM 및 UniMatch 모델 로드 ---
     device = args.device
-    
-    if args.model_type == "vit_h":
-        sam_checkpoint = "sam_vit_h_4b8939.pth"
-    elif args.model_type == "vit_l":
-        sam_checkpoint = "sam_vit_l_0b3195.pth"
-    elif args.model_type == "vit_b":
-        sam_checkpoint = "sam_vit_b_01ec64.pth"
-    else:
-        raise ValueError(f"Unsupported model_type: {args.model_type}")
-    
-    sam = sam_model_registry[args.model_type](checkpoint=sam_checkpoint)
-    sam.to(device=device)
-    sam.eval()
-    print(f'Loaded Segment Anything Model: vit_b')
+
+    # Create FastSAMPredictor
+    fast_sam = FastSAM("FastSAM-s.pt")
+    print(f'Loaded Fast Segment Anything Model: FastSam-s.pt')
     
     flow_model = load_unimatch_model(args.flow_checkpoint, device=device)
     
@@ -173,10 +164,13 @@ def main(args):
         predictions, visualized_output, segmap = catseg_map.run_on_image_custom_text(img, text)
         stage_times['CAT-Seg 세그멘테이션'] = time.time() - stage_start
 
-        # SAM 마스크 생성
+        # FastSAM 마스크 생성
         stage_start = time.time()
-        mask_generator_custom = SamAutomaticMaskGeneratorCustom(sam, semantic_map=segmap, target_class=target_class)
-        masks = mask_generator_custom.generate(current_image)
+        everything_results = fast_sam(current_image, device=device, retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)[0]
+        masks = everything_results.masks
+        masks = filter_masks_by_segmap(masks, segmap, target_class=target_class)
+        
+        
         stage_times['SAM 마스크 생성'] = time.time() - stage_start
 
         # YOLO 객체 감지
@@ -193,9 +187,10 @@ def main(args):
 
         # Hoist bbox를 기준으로 마스크 필터링
         filtered_masks = []
+        i = 0
         for hoist in hoist_objects:
             x_min, y_min, x_max, y_max = hoist['bbox']
-            masks_in_bbox = [mask for mask in masks if mask_overlaps_bbox_x(mask['segmentation'], x_min, x_max)]
+            masks_in_bbox = [mask.squeeze() for mask in masks if mask_overlaps_bbox_x(mask.squeeze(), x_min, x_max)]
             filtered_masks.extend(masks_in_bbox)
 
         # 중복 제거
@@ -212,8 +207,8 @@ def main(args):
         # Optical flow 계산 및 마스크 필터링
         if next_image is not None:
             if flow_magnitude_resized is not None:
-                final_filtered_masks = filter_masks_by_avg_flow(filtered_masks, flow_magnitude_resized, threshold=args.threshold_flow)
-                final_filtered_masks = merge_overlapping_masks(final_filtered_masks)
+                final_filtered_masks = filter_masks_by_avg_flow_v2(filtered_masks, flow_magnitude_resized, threshold=args.threshold_flow)
+                final_filtered_masks = merge_overlapping_masks_v2(final_filtered_masks)
             else:
                 print("Optical Flow가 존재하지 않아 모든 마스크 제거합니다.")
                 continue
@@ -313,9 +308,8 @@ def main(args):
             )
             plt.show()
             plt.close()
-            
+        
         stage_times['시각화'] = time.time() - stage_start
-            
         total_time = time.time() - total_start_time
         
         # 처리 시간 출력

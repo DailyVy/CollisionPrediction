@@ -56,12 +56,13 @@ def filter_masks_by_depth(masks, depth_mag, bbox_depth, threshold=0.1):
 
 def normalize_depth_to_meters(depth_value, min_depth=0.1, max_depth=10.0):
     """
-    0-255 범위의 depth 값을 실제 거리(미터)로 변환
     min_depth: 최소 거리 (미터)
     max_depth: 최대 거리 (미터)
     """
-    # 0-255 범위를 0-1로 정규화
-    normalized = depth_value / 255.0
+    
+    print(f"depth_value : {depth_value}")
+    # 0-1 범위로 정규화
+    normalized = 1.0 - (depth_value / 255.0)
     
     # 0-1 범위를 실제 거리(미터)로 변환
     depth_meters = normalized * (max_depth - min_depth) + min_depth
@@ -91,7 +92,7 @@ def get_3d_positions(objects, depth_map):
         positions_3d.append({
             'position': obj['position'],
             'bbox': obj.get('bbox', None),
-            'confidence': obj['confidence'],
+            'confidence': obj.get('confidence', None),
             'position_3d': (x, y, depth_meters)
         })
     
@@ -109,6 +110,11 @@ def process_depth(image, model, processor):
     
     # 예측된 depth를 numpy 배열로 변환
     depth_map = predicted_depth.squeeze().cpu().numpy()
+    
+    # Min-max scaling to 0-255 range
+    depth_min = depth_map.min()
+    depth_max = depth_map.max()
+    depth_map = ((depth_map - depth_min) / (depth_max - depth_min) * 255).astype(np.uint8)
     
     # 원본 이미지 크기로 리사이즈
     h, w = image.shape[:2]  # 원본 이미지 크기

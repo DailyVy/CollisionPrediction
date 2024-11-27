@@ -36,16 +36,16 @@ def calculate_3d_distance(pos1, pos2, image_height=360):
     # 픽셀 거리를 실제 거리(미터)로 변환
     real_distance = pixel_distance / adjusted_scale
     
-    # depth 차이를 실제 거리로 변환 (0-255 범위를 0.1-10m 범위로 변환)
+    # depth 차이를 실제 거리로 변환 (0-255 범위를 0.1-10m 범위로 변환) ==> 이미 변환되어 있음
     depth_diff = abs(z2 - z1)
-    depth_meters = depth_diff * (10.0 - 0.1) / 255.0
+    depth_meters = depth_diff
     
     # 3D 유클리드 거리 계산
     distance_3d = np.sqrt(real_distance**2 + depth_meters**2)
     
     return {
         'distance_3d': distance_3d,
-        'pixel_distance': pixel_distance,
+        '2d_real_distance': real_distance,
         'depth_difference': depth_meters,
         'weighted_score': distance_3d,
         'pixel_scale': adjusted_scale,
